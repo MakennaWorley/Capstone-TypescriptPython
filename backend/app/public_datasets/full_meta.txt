@@ -1,9 +1,0 @@
-seed=2056827191
-N0=500
-gens=5
-children=2
-mask_rate=0.5
-Ne=10000
-seq_len=1000000.0
-recomb=1e-08
-mu=1e-07
