@@ -1,0 +1,15 @@
+# Metadata for Family Simulation Run: families_trios
+
+seed=1407461548
+families=1000
+kids_per-family=3
+mask_rate=0.5
+trait_site_index=0
+n_markers=4
+total_sites=5
+trait_model=dominant
+trait_penetrance=0.85
+Ne=10000
+seq_len=100000.0
+recomb=1e-08
+mu=1e-06

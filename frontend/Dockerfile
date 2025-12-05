@@ -1,6 +1,6 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend/package*.json ./
 RUN npm install --frozen-lockfile --build-if-needed
 
 FROM node:22-alpine AS stage-1
