@@ -68,7 +68,7 @@ export default function App() {
 
   return (
     <div style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-      <h1>Proof of Concept: Probabilistic Ancestral Inference</h1>
+      <h1>Proof of Concept: Probabilistic Ancestral Inference from Incomplete Genetic Data</h1>
       <p>Backend: {API_BASE}</p>
 
       <button onClick={pingBackend}>Ping FastAPI</button>
@@ -76,7 +76,7 @@ export default function App() {
 
       <br /><br />
 
-      <button onClick={loadCSV}>Get me the DATA!</button>
+      <button onClick={loadCSV}>Fetch data!</button>
       {status && <p>{status}</p>}
 
       {/* --- Data Table --- */}
@@ -130,17 +130,6 @@ export default function App() {
           </table>
         </>
       )}
-
-      <br /><br />
-
-      {/* --- Name input section --- */}
-      <h2>Misc</h2>
-      <input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Name"
-      />
-      <button onClick={() => alert(`Hi, ${name}! (stub)`)}>Send</button>
     </div>
   );
 }

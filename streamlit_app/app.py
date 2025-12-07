@@ -21,6 +21,7 @@ API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 st.set_page_config(page_title="Streamlit + FastAPI", layout="wide")
 st.title("Proof of Concept: Probabilistic Ancestral Inference from Incomplete Genetic Data")
 st.caption(f"Backend fastAPI Docker container at: {API_BASE}")
+st.caption(f"Example: http://localhost:8000/api/hello")
 
 col_intro, col_why = st.columns(2)
 
