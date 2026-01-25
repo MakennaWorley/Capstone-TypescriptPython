@@ -1,3 +1,14 @@
+"""
+Supports:
+- msprime ancestry + recombination: Simulates founder haplotypes using the DTWF model.
+- Independent nuclear families: Generates parent-child trios/siblings rather than a single population-wide pedigree.
+- Multi-site genotypes: Supports a designated Trait Locus (S0) and multiple additional Marker Loci.
+- Binary phenotype labeling: Assigns 'y' based on dominant or recessive models with adjustable penetrance.
+- Linked Parent Masking: If a parent's trait dosage is masked, all their associated marker dosages are also masked (simulating missing individual data).
+- Wide-format export: Optimized for sibling/parent-based Bayesian and HMM model inputs.
+- Reproducible seeds: Global seed management for consistent stochastic simulation.
+"""
+
 import os, re, argparse
 import numpy as np
 import pandas as pd
