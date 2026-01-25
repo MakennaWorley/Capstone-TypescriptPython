@@ -55,6 +55,10 @@ docker compose build --no-cache
 docker compose up
 ```
 
+#### How to run the .venv python environment
+
+run `source .venv/bin/activate` to activate the python environment.
+
 ### 🎯 Proof of Concept Deliverables
 The initial phase includes the following specific tasks:
 

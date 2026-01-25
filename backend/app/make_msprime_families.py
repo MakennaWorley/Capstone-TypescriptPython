@@ -7,6 +7,7 @@ Supports:
 - Linked Parent Masking: If a parent's trait dosage is masked, all their associated marker dosages are also masked (simulating missing individual data).
 - Wide-format export: Optimized for sibling/parent-based Bayesian and HMM model inputs.
 - Reproducible seeds: Global seed management for consistent stochastic simulation.
+
 """
 
 import os, re, argparse
