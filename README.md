@@ -1,23 +1,46 @@
-## 🔬 Probabilistic Ancestral Inference: Proof of Concept (PoC)
+## 🧬 Probabilistic Ancestral Inference Research Project
 
-This repository contains the Proof of Concept (PoC) for a project exploring the use of probabilistic models to reconstruct missing ancestral genotypes from incomplete genetic data.
-
-The PoC focuses on a core deliverable: a working system capable of inferring masked ancestral genotypes in simulated **_Drosophila melanogaster_ (fruit fly) populations** using a **Bayesian inference model**.
+This repository contains a research framework designed to reconstruct latent states within high-dimensional, hierarchical stochastic datasets. While the project utilizes biological rules for data generation, its primary purpose is benchmarking the robustness of various probabilistic machine-learning architectures under controlled data degradation.
 
 ---
 
 ### 🌟 Project Goal
 
-The primary goal of the PoC is to establish the technical and scientific feasibility of the inference framework by demonstrating that a **Bayesian model** trained on partially masked simulation data can accurately recover missing genotypes and visualize the results through an interactive dashboard.
+The core mission is to evaluate the technical trade-offs between computational efficiency and inference precision. Key objectives include:
 
-### 🛠️ Key Components
+#### 🛠️ Key Components
 
-The PoC system is built upon the following technologies and methodologies:
+* **Hierarchical Modeling:** Designing a system to model latent dependencies within stochastic data.
+* **Multi-Model Benchmarking:** Implementing and comparing Bayesian Inference, Hidden Markov Models (HMM), and Graph Neural Networks (GNN)..
+* **Quantitative Validation:** Using "ground-truth" data generators to measure recovery performance against systematic masking.
+* **Visualization:** A React dashboard to visualize the data and models.
 
-* **Model Organism:** Simulated **_Drosophila melanogaster_** populations, which provide a well-characterized system for controlled modeline.
-* **Simulation:** Multi-generational population data generated using the forward-time and coalescent-based simulation frameworks **simuPOP** and **msprime**.
-* **Inference Model:** A baseline **Bayesian model** developed using **PyMC** (built on PyTensor) to infer missing ancestral genotypes.
-* **Visualization:** A lightweight **Streamlit dashboard** for visualization, loading datasets, running inference, and viewing performance metrics.
+---
+
+### 🛠 Technical Stack & Reproducibility
+
+The project emphasizes engineering rigor and reproducibility through a modular architecture:
+
+* **Data Engine:** Powered by `msprime` for high-fidelity simulation of multi-generational datasets.
+* **Meta-Replay System:** Uses JSON-based metadata and specific random seeds to ensure exact dataset reconstruction for benchmarking.
+* **Inference Frameworks:**
+    * **Bayesian:** Developed via `PyMC` and `PyTensor`
+    * **HMM:** Implemented using `pomegranate` or `hmmlearn`
+    * **GNN:** Built with PyTorch `Geometric` for multi-way dependency modeling
+* **Application Layer:** A `FastAPI` backend serving a custom `React` dashboard for interactive visualization of calibration and uncertainty.
+* **Deployment:** Fully containerized with `Docker` for cross-platform portability.
+
+---
+
+### 📊 Evaluation Metrics
+
+Models are benchmarked using both quantitative and qualitative dimensions:
+
+
+* **Reconstruction Accuracy:** Precision, recall, and F1-scores compared against the known "truth".
+* **Model Calibration:** Aligning reported confidence intervals with actual recovery rates.
+* **Computational Robustness:** Measuring the "break point" of each architecture across a spectrum of masking rates.
+* **Statistical Significance:** Validation via chi-square and likelihood-ratio tests.
 
 ---
 
@@ -55,20 +78,6 @@ docker compose build --no-cache
 docker compose up
 ```
 
-### 🎯 Proof of Concept Deliverables
-The initial phase includes the following specific tasks:
+#### How to run the .venv python environment
 
-- Simulate multi-generational fruit-fly populations with known inheritance rules using simuPOP and msprime.
-- Develop and train a baseline Bayesian model to infer missing ancestral genotypes.
-- Generate three independent datasets (training, validation, and testing) to ensure statistical robustness.
-- Implement a lightweight Streamlit dashboard for visualization and performance monitoring.
-- Evaluate inference accuracy using chi-square and likelihood-based metrics.
-
-### 📝 Evaluation
-Evaluation for the PoC focuses on Accuracy and Usability.
-
-
-- Accuracy: Comparing predicted vs. known genotypes using statistical metrics (precision, recall, chi-square).
-- Usability: Ensuring the dashboard clearly communicates results and model uncertainty.
-
-The PoC serves as the Absolute Minimum deliverable for the project.
+run `source .venv/bin/activate` to activate the python environment.
