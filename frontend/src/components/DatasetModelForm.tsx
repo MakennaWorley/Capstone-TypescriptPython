@@ -37,7 +37,7 @@ type SimConfig = {
 };
 
 type GenerateRequest = {
-	params: SimConfig;
+	params: Pick<SimConfig, 'name'> & Partial<SimConfig>;
 };
 
 type Props = {
@@ -49,15 +49,15 @@ type Props = {
 // ---------- defaults ----------
 const DEFAULTS: SimConfig = {
 	name: '',
-	n_diploid_samples: 100,
-	masking_rate: 0.2,
+	n_diploid_samples: NaN,
+	masking_rate: NaN,
 
-	Ne: 10_000,
-	sequence_length: 100_000,
-	recombination_rate: 1e-8,
-	mutation_rate: 1e-8,
+	Ne: NaN,
+	sequence_length: NaN,
+	recombination_rate: NaN,
+	mutation_rate: NaN,
 
-	min_variants: 100
+	min_variants: NaN
 };
 
 export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/create/data' }: Props) {
@@ -69,8 +69,20 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 	const [cfg, setCfg] = useState<SimConfig>(DEFAULTS);
 	const [seedText, setSeedText] = useState('');
 
+	const [dirty, setDirty] = useState<Set<keyof SimConfig>>(() => new Set());
+	const [seedDirty, setSeedDirty] = useState(false);
+
+	function markDirty<K extends keyof SimConfig>(key: K) {
+		setDirty((prev) => {
+			const next = new Set(prev);
+			next.add(key);
+			return next;
+		});
+	}
+
 	function update<K extends keyof SimConfig>(key: K, value: SimConfig[K]) {
 		setCfg((prev) => ({ ...prev, [key]: value }));
+		markDirty(key);
 	}
 
 	// ---------- validation ----------
@@ -93,23 +105,23 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 		}
 
 		if (advanced) {
-			if (!Number.isFinite(cfg.Ne) || !Number.isInteger(cfg.Ne) || cfg.Ne <= 0) {
+			if (Number.isFinite(cfg.Ne) && (!Number.isInteger(cfg.Ne) || cfg.Ne <= 0)) {
 				e.push('Ne must be a positive integer.');
 			}
 
-			if (!Number.isFinite(cfg.sequence_length) || !Number.isInteger(cfg.sequence_length) || cfg.sequence_length <= 0) {
+			if (Number.isFinite(cfg.sequence_length) && (!Number.isInteger(cfg.sequence_length) || cfg.sequence_length <= 0)) {
 				e.push('Sequence length must be a positive integer.');
 			}
 
-			if (!Number.isFinite(cfg.recombination_rate) || cfg.recombination_rate <= 0) {
+			if (Number.isFinite(cfg.recombination_rate) && cfg.recombination_rate <= 0) {
 				e.push('Recombination rate must be a positive number.');
 			}
 
-			if (!Number.isFinite(cfg.mutation_rate) || cfg.mutation_rate <= 0) {
+			if (Number.isFinite(cfg.mutation_rate) && cfg.mutation_rate <= 0) {
 				e.push('Mutation rate must be a positive number.');
 			}
 
-			if (!Number.isFinite(cfg.min_variants) || !Number.isInteger(cfg.min_variants) || cfg.min_variants <= 0) {
+			if (Number.isFinite(cfg.min_variants) && (!Number.isInteger(cfg.min_variants) || cfg.min_variants <= 0)) {
 				e.push('Min variants must be a positive integer.');
 			}
 
@@ -137,12 +149,29 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 		try {
 			const seedVal = parseOptionalNumber(seedText);
 
-			const params: SimConfig = {
-				...cfg,
-				name: cfg.name.trim(),
-				masking_rate: clamp01(cfg.masking_rate),
-				...(seedVal === undefined ? {} : { seed: seedVal })
+			const params: Pick<SimConfig, 'name'> & Partial<SimConfig> = {
+				name: cfg.name.trim()
 			};
+
+			// REQUIRED fields: send if finite
+			if (Number.isFinite(cfg.n_diploid_samples)) {
+				params.n_diploid_samples = cfg.n_diploid_samples;
+			}
+			if (Number.isFinite(cfg.masking_rate)) {
+				params.masking_rate = clamp01(cfg.masking_rate);
+			}
+
+			// OPTIONAL advanced: send any finite ones (user may fill 1 or many)
+			if (advanced) {
+				if (Number.isFinite(cfg.Ne)) params.Ne = cfg.Ne;
+				if (Number.isFinite(cfg.sequence_length)) params.sequence_length = cfg.sequence_length;
+				if (Number.isFinite(cfg.recombination_rate)) params.recombination_rate = cfg.recombination_rate;
+				if (Number.isFinite(cfg.mutation_rate)) params.mutation_rate = cfg.mutation_rate;
+				if (Number.isFinite(cfg.min_variants)) params.min_variants = cfg.min_variants;
+
+				// Seed: only if they touched it AND provided a valid number
+				if (seedDirty && seedVal !== undefined) params.seed = seedVal;
+			}
 
 			const payload: GenerateRequest = { params };
 
@@ -169,6 +198,9 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 
 			setStatus('Success!');
 			setResponseJson(maybeJson ?? text);
+
+			setDirty(new Set());
+			setSeedDirty(false);
 		} catch (err) {
 			console.error(err);
 			setStatus('Network error');
@@ -186,7 +218,7 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 				<legend>Basic</legend>
 
 				<label style={{ display: 'grid', gap: 6 }}>
-					Dataset name (alphanumeric, no spaces)
+					Dataset name (alphanumeric, no spaces) <span style={{ color: 'crimson' }}>*</span>
 					<input
 						value={cfg.name}
 						onChange={(e) => update('name', e.target.value)}
@@ -197,11 +229,12 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 
 				<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
 					<label>
-						Num diploid samples
+						Num diploid samples <span style={{ color: 'crimson' }}>*</span>
 						<input
 							type="number"
-							value={cfg.n_diploid_samples}
-							onChange={(e) => update('n_diploid_samples', Number(e.target.value))}
+							value={Number.isFinite(cfg.n_diploid_samples) ? cfg.n_diploid_samples : ''}
+							placeholder="200"
+							onChange={(e) => update('n_diploid_samples', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 							min={1}
 							step={1}
 							style={{ width: '100%', padding: '0.5rem' }}
@@ -209,11 +242,12 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 					</label>
 
 					<label>
-						Masking rate (0–1)
+						Masking rate (0–1) <span style={{ color: 'crimson' }}>*</span>
 						<input
 							type="number"
-							value={cfg.masking_rate}
-							onChange={(e) => update('masking_rate', Number(e.target.value))}
+							value={Number.isFinite(cfg.masking_rate) ? cfg.masking_rate : ''}
+							placeholder="0.2"
+							onChange={(e) => update('masking_rate', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 							min={0}
 							max={1}
 							step={0.01}
@@ -221,6 +255,10 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 						/>
 					</label>
 				</div>
+
+				<p style={{ fontSize: '0.85rem', color: '#555' }}>
+					<span style={{ color: 'crimson' }}>*</span> Required fields
+				</p>
 
 				<label style={{ display: 'flex', gap: 8, marginTop: 12 }}>
 					<input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} />
@@ -231,15 +269,18 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 			{/* ADVANCED */}
 			{advanced && (
 				<fieldset style={{ padding: '1rem' }}>
-					<legend>Advanced</legend>
+					<legend>
+						Advanced <span style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>(optional)</span>
+					</legend>
 
 					<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
 						<label>
 							Ne
 							<input
 								type="number"
-								value={cfg.Ne}
-								onChange={(e) => update('Ne', Number(e.target.value))}
+								value={Number.isFinite(cfg.Ne) ? cfg.Ne : ''}
+								placeholder="10000"
+								onChange={(e) => update('Ne', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 								min={1}
 								step={1}
 								style={{ padding: '0.5rem' }}
@@ -250,8 +291,9 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 							Sequence length
 							<input
 								type="number"
-								value={cfg.sequence_length}
-								onChange={(e) => update('sequence_length', Number(e.target.value))}
+								value={Number.isFinite(cfg.sequence_length) ? cfg.sequence_length : ''}
+								placeholder="100000"
+								onChange={(e) => update('sequence_length', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 								min={1}
 								step={1}
 								style={{ padding: '0.5rem' }}
@@ -262,8 +304,9 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 							Recombination rate
 							<input
 								type="number"
-								value={cfg.recombination_rate}
-								onChange={(e) => update('recombination_rate', Number(e.target.value))}
+								value={Number.isFinite(cfg.recombination_rate) ? cfg.recombination_rate : ''}
+								placeholder="1e-8"
+								onChange={(e) => update('recombination_rate', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 								step={1e-9}
 								style={{ padding: '0.5rem' }}
 							/>
@@ -273,8 +316,9 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 							Mutation rate
 							<input
 								type="number"
-								value={cfg.mutation_rate}
-								onChange={(e) => update('mutation_rate', Number(e.target.value))}
+								value={Number.isFinite(cfg.mutation_rate) ? cfg.mutation_rate : ''}
+								placeholder="1e-8"
+								onChange={(e) => update('mutation_rate', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 								step={1e-9}
 								style={{ padding: '0.5rem' }}
 							/>
@@ -284,8 +328,9 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 							Min variants
 							<input
 								type="number"
-								value={cfg.min_variants}
-								onChange={(e) => update('min_variants', Number(e.target.value))}
+								value={Number.isFinite(cfg.min_variants) ? cfg.min_variants : ''}
+								placeholder="100"
+								onChange={(e) => update('min_variants', e.target.value === '' ? (NaN as any) : Number(e.target.value))}
 								min={1}
 								step={1}
 								style={{ padding: '0.5rem' }}
@@ -294,7 +339,15 @@ export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/cr
 
 						<label>
 							Seed (blank = auto)
-							<input value={seedText} onChange={(e) => setSeedText(e.target.value)} placeholder="42" style={{ padding: '0.5rem' }} />
+							<input
+								value={seedText}
+								onChange={(e) => {
+									setSeedText(e.target.value);
+									setSeedDirty(true);
+								}}
+								placeholder="42"
+								style={{ padding: '0.5rem' }}
+							/>
 						</label>
 					</div>
 				</fieldset>

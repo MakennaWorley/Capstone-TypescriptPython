@@ -3,6 +3,7 @@ import DatasetModelForm from './components/DatasetModelForm.js';
 
 export default function App() {
 	const API_BASE = 'http://localhost:8000';
+	const API_KEY = 'REACT_FRONTEND_REQUEST';
 
 	const [msg, setMsg] = useState<string | null>(null);
 	const [status, setStatus] = useState('');
@@ -27,20 +28,7 @@ export default function App() {
 			{msg && <p>Message: {msg}</p>}
 			{status && <p>{status}</p>}
 
-			<h2>Auth</h2>
-			<div style={{ display: 'grid', gap: '0.75rem', maxWidth: 420, marginBottom: 18 }}>
-				<label>
-					X-API-Key (header)
-					<input
-						value={xApiKey}
-						onChange={(e) => setXApiKey(e.target.value)}
-						placeholder="test123"
-						style={{ width: '100%', padding: '0.5rem' }}
-					/>
-				</label>
-			</div>
-
-			<DatasetModelForm apiBase={API_BASE} xApiKey={xApiKey} />
+			<DatasetModelForm apiBase={API_BASE} xApiKey={API_KEY} />
 		</div>
 	);
 }

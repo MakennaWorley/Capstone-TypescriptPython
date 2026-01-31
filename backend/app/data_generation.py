@@ -482,3 +482,66 @@ def create_data() -> None:
 
 if __name__ == "__main__":
     create_data()
+
+# -----------------------------
+# API
+# -----------------------------
+
+def build_config_from_params(params: Dict[str, Any]) -> "SimConfig":
+    """
+    Builds a SimConfig from incoming params (e.g., API request JSON).
+    - Starts from SimConfig defaults.
+    - Overlays keys from params if they exist on SimConfig.
+    - Ensures we have a seed (generate if missing/None).
+    """
+
+    valid_fields = SimConfig.__dataclass_fields__.keys()
+
+    # 1. Filter the incoming params
+    filtered_params = {k: v for k, v in params.items() if k in valid_fields and v is not None}
+
+    # 2. Check if a seed was provided; if not, generate one (matching CLI behavior)
+    if "seed" not in filtered_params or filtered_params["seed"] is None:
+        filtered_params["seed"] = int(np.random.SeedSequence().entropy % (2**32))
+
+    # 3. Create the frozen object
+    return SimConfig(**filtered_params)
+
+
+def create_data_from_params(
+    params: Dict[str, Any],
+    *,
+    meta_in: Optional[str] = None,
+    meta_out: Optional[str] = None,
+    meta_wins: bool = False
+) -> Dict[str, Any]:
+    """
+    Programmatic equivalent of create_data(), designed for API usage.
+
+    params: dict from request body
+    meta_in: optional path to a meta JSON to replay
+    meta_out: optional path to write meta JSON (if you do metadata logging)
+    meta_wins: if True and meta_in provided, meta overrides params
+    """
+    if meta_in:
+        loaded = read_json(meta_in)
+        if meta_wins:
+            # meta overwrites request params
+            merged = {**params, **loaded}
+        else:
+            # request params overwrite meta
+            merged = {**loaded, **params}
+        params = merged
+
+    cfg = build_config_from_params(params)
+
+    if meta_out:
+        meta_payload = asdict(cfg) if hasattr(cfg, "__dataclass_fields__") else cfg.__dict__
+        write_json(meta_out, meta_payload)
+
+    outputs = run_generation(cfg)
+
+    return {
+        "config": asdict(cfg) if hasattr(cfg, "__dataclass_fields__") else cfg.__dict__,
+        "outputs": outputs,
+    }
