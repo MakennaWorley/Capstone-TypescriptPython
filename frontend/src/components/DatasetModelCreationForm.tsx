@@ -60,7 +60,7 @@ const DEFAULTS: SimConfig = {
 	min_variants: NaN
 };
 
-export default function DatasetModelForm({ apiBase, xApiKey, endpoint = '/api/create/data' }: Props) {
+export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = '/api/create/data' }: Props) {
 	const [advanced, setAdvanced] = useState(false);
 	const [sending, setSending] = useState(false);
 	const [status, setStatus] = useState('');

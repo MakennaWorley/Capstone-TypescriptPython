@@ -1,5 +1,21 @@
 import { useState } from 'react';
-import DatasetModelForm from './components/DatasetModelForm.js';
+import DatasetDashboard from './components/DatasetDisplayDashboard.js';
+import DatasetModelCreationForm from './components/DatasetModelCreationForm.js';
+
+type ApiSuccessDatasets = {
+	status: 'success';
+	message: string;
+	data: {
+		datasets: string[];
+		count: number;
+	};
+};
+
+type ApiError = {
+	status: 'error';
+	code?: string;
+	message: string;
+};
 
 export default function App() {
 	const API_BASE = 'http://localhost:8000';
@@ -7,7 +23,7 @@ export default function App() {
 
 	const [msg, setMsg] = useState<string | null>(null);
 	const [status, setStatus] = useState('');
-	const [xApiKey, setXApiKey] = useState('');
+	const [datasets, setDatasets] = useState<string[]>([]);
 
 	// --- Ping FastAPI ---
 	async function pingBackend() {
@@ -22,13 +38,45 @@ export default function App() {
 		}
 	}
 
+	// --- Fetch dataset list ---
+	async function fetchDatasets() {
+		try {
+			setStatus('Fetching datasets...');
+
+			const r = await fetch(`${API_BASE}/api/datasets/list`, {
+				method: 'GET',
+				headers: { 'x-api-key': API_KEY }
+			});
+
+			const j: ApiSuccessDatasets | ApiError = await r.json();
+
+			if (j.status === 'success') {
+				setDatasets(j.data.datasets);
+				setMsg(`Loaded ${j.data.count} datasets`);
+				setStatus('Success!');
+			} else {
+				setDatasets([]);
+				setStatus(j.message || 'Failed to load datasets');
+			}
+		} catch {
+			setDatasets([]);
+			setStatus('Error fetching datasets');
+		}
+	}
+
 	return (
 		<div style={{ padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
 			<button onClick={pingBackend}>Ping FastAPI</button>
-			{msg && <p>Message: {msg}</p>}
-			{status && <p>{status}</p>}
+			<button onClick={fetchDatasets} style={{ marginLeft: '1rem' }}>
+				List Datasets
+			</button>
 
-			<DatasetModelForm apiBase={API_BASE} xApiKey={API_KEY} />
+			{status && <p>{status}</p>}
+			{msg && <p>Message: {msg}</p>}
+
+			<DatasetDashboard apiBase={API_BASE} xApiKey={API_KEY} datasets={datasets} />
+
+			<DatasetModelCreationForm apiBase={API_BASE} xApiKey={API_KEY} />
 		</div>
 	);
 }

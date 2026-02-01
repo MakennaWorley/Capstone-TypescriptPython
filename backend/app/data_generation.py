@@ -89,6 +89,11 @@ def read_json(path: str) -> dict:
 def now_utc_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
+def add_to_file(text: str, output_dir: str) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, "datasets.txt")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(text.rstrip("\n") + "\n")
 
 # -----------------------------
 # Meta replay
@@ -354,7 +359,7 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
         write_meta_txt(outputs["meta_txt"], cfg_used, derived, outputs)
 
     # Console summary
-    print("✅ Generation complete.")
+    print("Generation complete.")
     print(f"   Trees:    {outputs['trees']}")
     print(f"   Truth:    {outputs['truth_csv']}")
     print(f"   Observed: {outputs['observed_csv']}")
@@ -364,7 +369,6 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
     print(f"   Variants: {ts.num_sites}")
 
     return outputs
-
 
 # -----------------------------
 # Checks
@@ -386,7 +390,6 @@ def checks(truth_csv: str, observed_csv: str) -> None:
 
     uniq = np.unique(truth_vals)
     print(f"[check] Unique truth dosages (first few): {uniq[:10]} (total unique={len(uniq)})")
-
 
 # -----------------------------
 # CLI / main
@@ -431,7 +434,6 @@ def parse_args() -> argparse.Namespace:
 
     return ap.parse_args()
 
-
 def args_to_config(args: argparse.Namespace) -> SimConfig:
     # If no seed provided, choose random seed and record it
     seed = args.seed
@@ -454,7 +456,6 @@ def args_to_config(args: argparse.Namespace) -> SimConfig:
         write_meta_txt=args.write_meta_txt,
     )
 
-
 def create_data() -> None:
     args = parse_args()
 
@@ -475,7 +476,10 @@ def create_data() -> None:
     # Run generation
     outputs = run_generation(cfg, meta_in=meta_in, meta_out=args.meta_out)
 
-    # Optional quick checks
+    # Add to .txt file
+    add_to_file(args.name, args.output_dir)
+
+    # Optional quick checksgener
     if args.checks:
         checks(outputs["truth_csv"], outputs["observed_csv"])
 
@@ -506,7 +510,6 @@ def build_config_from_params(params: Dict[str, Any]) -> "SimConfig":
 
     # 3. Create the frozen object
     return SimConfig(**filtered_params)
-
 
 def create_data_from_params(
     params: Dict[str, Any],
@@ -540,6 +543,8 @@ def create_data_from_params(
         write_json(meta_out, meta_payload)
 
     outputs = run_generation(cfg)
+
+    add_to_file(cfg.name, cfg.output_dir)
 
     return {
         "config": asdict(cfg) if hasattr(cfg, "__dataclass_fields__") else cfg.__dict__,
