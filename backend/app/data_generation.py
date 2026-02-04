@@ -60,14 +60,12 @@ class SimConfig:
 	seed: int = 42
 	masking_rate: float = 0.20
 	output_dir: str = 'datasets'
-	name: str = 'run1'
+	full_data: bool = False
+	name: str = 'DEFAULT_NAME'
 
 	# Variant filtering
 	min_variants: int = 100
 	max_retries: int = 10
-
-	# Optional outputs
-	write_meta_txt: bool = True
 
 
 # -----------------------------
@@ -123,23 +121,6 @@ def dict_to_config(d: Dict[str, Any]) -> SimConfig:
 	fields = set(SimConfig.__dataclass_fields__.keys())
 	filtered = {k: v for k, v in d.items() if k in fields}
 	return SimConfig(**filtered)
-
-
-def merge_configs(cli_cfg: SimConfig, meta_cfg: SimConfig, *, meta_wins: bool) -> SimConfig:
-	"""
-	Merge meta config with CLI config.
-	If meta_wins=True: meta overrides CLI
-	Else: CLI overrides meta (default behavior; meta provides defaults)
-	"""
-	cli = config_to_dict(cli_cfg)
-	meta = config_to_dict(meta_cfg)
-
-	if meta_wins:
-		merged = {**cli, **meta}
-	else:
-		merged = {**meta, **cli}
-
-	return dict_to_config(merged)
 
 
 # -----------------------------
@@ -364,10 +345,7 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 
 	# Save JSON meta (round-trippable)
 	write_json(outputs['meta_json'], meta_payload)
-
-	# Optional TXT meta (human readable)
-	if cfg_used.write_meta_txt:
-		write_meta_txt(outputs['meta_txt'], cfg_used, derived, outputs)
+	write_meta_txt(outputs['meta_txt'], cfg_used, derived, outputs)
 
 	# Console summary
 	print('Generation complete.')
@@ -425,22 +403,13 @@ def parse_args() -> argparse.Namespace:
 	ap.add_argument('--seed', type=int, default=None, help='Random seed; if omitted, a random seed is chosen and recorded in meta.')
 	ap.add_argument('--masking-rate', type=float, default=SimConfig.masking_rate)
 	ap.add_argument('--output-dir', type=str, default=SimConfig.output_dir)
+	ap.add_argument('--full-data', action='store_true', help='Generate Train/Val/Test splits.', default=SimConfig.full_data)
 	ap.add_argument('--name', type=str, default=SimConfig.name)
 
 	ap.add_argument('--min-variants', type=int, default=SimConfig.min_variants)
 	ap.add_argument('--max-retries', type=int, default=SimConfig.max_retries)
 
-	ap.add_argument('--write-meta-txt', action='store_true', default=SimConfig.write_meta_txt)
-	ap.add_argument('--no-write-meta-txt', action='store_false', dest='write_meta_txt')
-
-	# Meta replay flags
 	ap.add_argument('--meta-in', type=str, default=None, help='JSON meta file to reproduce a previous run.')
-	ap.add_argument('--meta-out', type=str, default=None, help='Explicit JSON meta output path (otherwise auto-named).')
-
-	# Merge behavior
-	merge = ap.add_mutually_exclusive_group()
-	merge.add_argument('--cli-wins', action='store_true', default=True, help='When using --meta-in, CLI overrides meta (default).')
-	merge.add_argument('--meta-wins', action='store_true', default=False, help='When using --meta-in, meta overrides CLI.')
 
 	ap.add_argument('--checks', action='store_true', default=False, help='Run lightweight integrity checks on saved CSVs.')
 
@@ -463,10 +432,10 @@ def args_to_config(args: argparse.Namespace) -> SimConfig:
 		seed=seed,
 		masking_rate=args.masking_rate,
 		output_dir=args.output_dir,
+		full_data=args.full_data,
 		name=args.name,
 		min_variants=args.min_variants,
 		max_retries=args.max_retries,
-		write_meta_txt=args.write_meta_txt,
 	)
 
 
@@ -483,10 +452,20 @@ def create_data() -> None:
 		cfg = args_to_config(args)
 
 	# Run generation
-	outputs = run_generation(cfg, meta_in=args.meta_in, meta_out=args.meta_out)
+	if args.full_data:
+		splits = ['training', 'validation', 'testing']
 
-	# Add to .txt file
-	add_to_file(args.name, args.output_dir)
+		for i, split in enumerate(splits):
+			# Create a unique config for each split
+			split_cfg = dict_to_config({**asdict(cfg), 'name': f'{cfg.name}.{split}', 'seed': cfg.seed + (i * 1000)})
+			run_generation(split_cfg)
+
+		# Save only the base name to the tracker file
+		add_to_file(cfg.name, cfg.output_dir)
+	else:
+		# Standard single run
+		outputs = run_generation(cfg)
+		add_to_file(args.name, cfg.output_dir)
 
 	# Optional quick checksgener
 	if args.checks:
@@ -534,23 +513,24 @@ def create_data_from_params(
 	meta_wins: if True and meta_in provided, meta overrides params
 	"""
 	if meta_in:
-		loaded = read_json(meta_in)
-		if meta_wins:
-			# meta overwrites request params
-			merged = {**params, **loaded}
-		else:
-			# request params overwrite meta
-			merged = {**loaded, **params}
-		params = merged
+		meta = read_json(meta_in)
+		# Handle the case where 'params' might be nested or flat
+		params_dict = meta.get('params', meta)
+		cfg = dict_to_config(params_dict)
+	else:
+		cfg = build_config_from_params(params)
 
-	cfg = build_config_from_params(params)
+	if cfg.full_data:
+		splits = ['training', 'validation', 'testing']
 
-	if meta_out:
-		meta_payload = asdict(cfg) if hasattr(cfg, '__dataclass_fields__') else cfg.__dict__
-		write_json(meta_out, meta_payload)
+		for i, split in enumerate(splits):
+			split_cfg = dict_to_config({**asdict(cfg), 'name': f'{cfg.name}.{split}', 'seed': cfg.seed + (i * 1000)})
+			run_generation(split_cfg)
 
-	outputs = run_generation(cfg)
+		add_to_file(cfg.name, cfg.output_dir)
+		return {'config': asdict(cfg), 'outputs': cfg.name, 'mode': 'stratified_triplet'}
 
-	add_to_file(cfg.name, cfg.output_dir)
-
-	return {'config': asdict(cfg) if hasattr(cfg, '__dataclass_fields__') else cfg.__dict__, 'outputs': outputs}
+	else:
+		run_generation(cfg)
+		add_to_file(cfg.name, cfg.output_dir)
+		return {'config': asdict(cfg), 'outputs': cfg.name, 'mode': 'single_dataset'}

@@ -34,6 +34,7 @@ type SimConfig = {
 
 	seed?: number;
 	min_variants: number;
+	full_data: boolean;
 };
 
 type GenerateRequest = {
@@ -57,7 +58,8 @@ const DEFAULTS: SimConfig = {
 	recombination_rate: NaN,
 	mutation_rate: NaN,
 
-	min_variants: NaN
+	min_variants: NaN,
+	full_data: false
 };
 
 export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = '/api/create/data' }: Props) {
@@ -150,7 +152,8 @@ export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = 
 			const seedVal = parseOptionalNumber(seedText);
 
 			const params: Pick<SimConfig, 'name'> & Partial<SimConfig> = {
-				name: cfg.name.trim()
+				name: cfg.name.trim(),
+				full_data: cfg.full_data
 			};
 
 			// REQUIRED fields: send if finite
@@ -348,6 +351,11 @@ export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = 
 								placeholder="42"
 								style={{ padding: '0.5rem' }}
 							/>
+						</label>
+
+						<label style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', cursor: 'pointer' }}>
+							<input type="checkbox" checked={cfg.full_data} onChange={(e) => update('full_data', e.target.checked)} />
+							<span style={{ fontWeight: 'bold' }}>Generate datasets for training a model</span>
 						</label>
 					</div>
 				</fieldset>
