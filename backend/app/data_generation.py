@@ -48,13 +48,17 @@ import tskit
 class SimConfig:
 	# Sampling / population parameters
 	n_diploid_samples: int = 200
-	Ne: int = 10_000
+	Ne: int = 500
 	ploidy: int = 2
 
 	# Genome / simulation parameters
 	sequence_length: int = 100_000
 	recombination_rate: float = 1e-8
 	mutation_rate: float = 1e-8
+
+	# Ancestry
+	n_generations: int = 5
+	samples_per_generation: int = 50
 
 	# Output control
 	seed: int = 42
@@ -130,20 +134,29 @@ def dict_to_config(d: Dict[str, Any]) -> SimConfig:
 
 def simulate_tree_sequence(cfg: SimConfig) -> tskit.TreeSequence:
 	"""
-	Step A: ancestry (coalescent + recombination)
-	Step B: mutations (observables)
+	Simulates ancestry with explicit sampled generations time=0..(n_generations-1),
+	so parent links exist across multiple generations in ts.individuals().
 	"""
-	ts_ancestry = msprime.sim_ancestry(
-		samples=cfg.n_diploid_samples,
-		ploidy=cfg.ploidy,
+	# Decide how many diploid individuals to sample each generation
+	if cfg.samples_per_generation is not None:
+		n_per_gen = cfg.samples_per_generation
+	else:
+		# fallback: evenly split n_diploid_samples across generations
+		n_per_gen = max(1, cfg.n_diploid_samples // cfg.n_generations)
+
+	# Sample from Generation 0 (children) and Generation 1 (parents)
+	samples = samples = [msprime.SampleSet(n_per_gen, time=t, ploidy=cfg.ploidy) for t in range(cfg.n_generations)]
+
+	ts = msprime.sim_ancestry(
+		samples=samples,
 		population_size=cfg.Ne,
 		sequence_length=cfg.sequence_length,
 		recombination_rate=cfg.recombination_rate,
 		random_seed=cfg.seed,
+		model='dtwf',  # Required for discrete generations and parent tracking
 	)
 
-	ts_mut = msprime.sim_mutations(ts_ancestry, rate=cfg.mutation_rate, random_seed=cfg.seed + 1, model='binary')
-
+	ts_mut = msprime.sim_mutations(ts, rate=cfg.mutation_rate, random_seed=cfg.seed + 1, model='binary')
 	return ts_mut
 
 
@@ -189,14 +202,25 @@ def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nd
 	first_site_obs = obs_matrix[0, :]
 
 	styles = []
+	styles.append(
+		"""
+		/* Default for every node (ancestors included) */
+		.node > .sym {
+		fill: #ffffff;
+		stroke: #555555;
+		stroke-width: 2;
+		}
+		""".strip()
+	)
 	for i, val in enumerate(first_site_obs):
 		if np.isnan(val):
-			# Masked: Outlined dotted blue
+			# Masked: outlined dotted blue
 			style_props = 'fill: none; stroke: #3498db; stroke-width: 2; stroke-dasharray: 4,3;'
 		else:
-			# Known: Filled blue
+			# Known: filled blue
 			style_props = 'fill: #3498db; stroke: #3498db; stroke-width: 2;'
 
+		# Map individual index i -> its two sample nodes
 		node_idx_0 = 2 * i
 		node_idx_1 = 2 * i + 1
 
@@ -209,12 +233,22 @@ def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nd
 	style_str = '\n'.join(styles)
 	svg_path = f'{base_path}.relationship.svg'
 
-	# 4. Draw with y_axis and y_scale to force vertical stretching
+	# 4. Labels (toggle this if you want less clutter)
+	label_internal_only = True
+
+	if label_internal_only:
+		# Label only internal nodes (ancestors)
+		node_labels = {u: f'n{u}@t{int(tree.time(u))}' for u in tree.nodes() if not tree.is_sample(u)}
+	else:
+		# Label all nodes (samples + ancestors)
+		node_labels = {u: f'n{u}@t{int(tree.time(u))}' for u in tree.nodes()}
+
+	# 5. Draw SVG
 	tree.draw_svg(
 		path=svg_path,
 		size=(dynamic_width, dynamic_height),
 		style=style_str,
-		node_labels={},
+		node_labels=node_labels,
 		y_axis=False,
 		y_label='Generations (Rank)',
 		time_scale='rank',
@@ -233,16 +267,20 @@ def genotype_matrix(ts: tskit.TreeSequence) -> np.ndarray:
 	return ts.genotype_matrix()
 
 
-def haploid_to_diploid_dosage(G_hap: np.ndarray, ploidy: int) -> np.ndarray:
+def haploid_to_diploid_dosage(ts: tskit.TreeSequence) -> np.ndarray:
 	"""
-	Convert haploid genotypes to diploid dosage (sites x individuals).
-	Assumes msprime diploid ordering: [ind0_h0, ind0_h1, ind1_h0, ind1_h1, ...]
+	Converts haploid genotype matrix (0/1) to diploid dosage (0/1/2).
+	Now accepts the ploidy argument to match the caller.
 	"""
-	if ploidy != 2:
-		raise ValueError('Diploid dosage conversion assumes ploidy=2.')
-	if G_hap.shape[1] % 2 != 0:
-		raise ValueError('Expected even number of sample genomes for diploids.')
-	return G_hap[:, 0::2] + G_hap[:, 1::2]
+	G_hap = ts.genotype_matrix()
+	# G_hap columns are sample nodes. ts.individuals() iterates over people.
+	G_dip = np.zeros((ts.num_sites, ts.num_individuals), dtype=np.int8)
+
+	for ind in ts.individuals():
+		# ind.nodes contains the column indices in G_hap for this person
+		G_dip[:, ind.id] = np.sum(G_hap[:, ind.nodes], axis=1)
+
+	return G_dip
 
 
 def mask(X: np.ndarray, masking_rate: float, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:
@@ -279,20 +317,27 @@ def sites_table(ts: tskit.TreeSequence) -> pd.DataFrame:
 	return pd.DataFrame(rows)
 
 
-def sample_metadata(ts: tskit.TreeSequence, ploidy: int) -> pd.DataFrame:
+def pedigree_table(ts: tskit.TreeSequence) -> pd.DataFrame:
 	"""Map sample genomes to individuals and haplotypes."""
-	sample_nodes = ts.samples()
-	data = []
-	for sample_index, node_id in enumerate(sample_nodes):
-		data.append(
-			{
-				'sample_index': int(sample_index),
-				'node_id': int(node_id),
-				'individual_index': int(sample_index // ploidy),
-				'hap_within_individual': int(sample_index % ploidy),
-			}
-		)
-	return pd.DataFrame(data)
+	rows = []
+	for ind in ts.individuals():
+		p0 = ind.parents[0] if len(ind.parents) > 0 else -1
+		p1 = ind.parents[1] if len(ind.parents) > 1 else -1
+		rows.append({'individual_id': ind.id, 'time': ind.time, 'parent_0_id': p0, 'parent_1_id': p1, 'num_nodes': len(ind.nodes)})
+	return pd.DataFrame(rows)
+
+
+def write_genotypes_by_generation(ts, G_dip, df_sites, output_dir, name_prefix):
+	ped = pedigree_table(ts)
+	for t in sorted(ped['time'].unique()):
+		ids = ped.loc[ped['time'] == t, 'individual_id'].to_list()
+		cols = [f'ind_{i:04d}' for i in ids]
+
+		df = pd.DataFrame(G_dip[:, ids], columns=cols)
+		df = pd.concat([df_sites, df], axis=1)
+
+		out = os.path.join(output_dir, f'{name_prefix}.gen_t{int(t)}.truth_genotypes.csv')
+		df.to_csv(out, index=False)
 
 
 # -----------------------------
@@ -310,7 +355,7 @@ def build_paths(cfg: SimConfig) -> Dict[str, str]:
 		'truth_csv': f'{base}.truth_genotypes.csv',
 		'observed_csv': f'{base}.observed_genotypes.csv',
 		'sites_csv': f'{base}.sites.csv',
-		'sample_metadata_csv': f'{base}.sample_metadata.csv',
+		'pedigree_csv': f'{base}.pedigree.csv',
 		'meta_json': f'{base}.run_metadata.json',
 		'meta_txt': f'{base}.run_metadata.txt',
 	}
@@ -348,7 +393,7 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 
 	# Extract genotypes
 	G_hap = genotype_matrix(ts)
-	G_dip = haploid_to_diploid_dosage(G_hap, ploidy=cfg_used.ploidy)
+	G_dip = haploid_to_diploid_dosage(ts)
 
 	# Mask at diploid-individual level
 	rng = np.random.default_rng(cfg_used.seed + 999)
@@ -356,13 +401,17 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 
 	# Build tables
 	df_sites = sites_table(ts)
-	df_samples = sample_metadata(ts, ploidy=cfg_used.ploidy)
+	df_pedigree = pedigree_table(ts)
+	# write_genotypes_by_generation(ts=ts, G_dip=G_dip, df_sites=df_sites, output_dir=cfg_used.output_dir, name_prefix=cfg_used.name)
 
 	# DataFrames with consistent column naming
 	individual_cols = [f'ind_{i:04d}' for i in range(G_dip.shape[1])]
 
 	df_truth = pd.DataFrame(G_dip, columns=individual_cols)
 	df_obs = pd.DataFrame(G_obs, columns=individual_cols)
+
+	genotype_cols = [c for c in df_obs.columns if c.startswith('ind_')]
+	df_obs[genotype_cols] = df_obs[genotype_cols].astype('Int8')
 
 	# Prepend site columns
 	df_truth = pd.concat([df_sites, df_truth], axis=1)
@@ -386,7 +435,7 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 	df_truth.to_csv(outputs['truth_csv'], index=False)
 	df_obs.to_csv(outputs['observed_csv'], index=False)
 	df_sites.to_csv(outputs['sites_csv'], index=False)
-	df_samples.to_csv(outputs['sample_metadata_csv'], index=False)
+	df_pedigree.to_csv(outputs['pedigree_csv'], index=False)
 
 	# Derived/run info (very helpful for reproducibility + debugging)
 	derived = {
@@ -421,7 +470,7 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 	print(f'   Observed: {outputs["observed_csv"]}')
 	print(f'   Meta:     {outputs["meta_json"]}')
 	print(f'   Sites:    {outputs["sites_csv"]}')
-	print(f'   Samples:  {outputs["sample_metadata_csv"]}')
+	print(f'   Pedigree: {outputs["pedigree_csv"]}')
 	print(f'   Variants: {ts.num_sites}')
 
 	return outputs
@@ -467,6 +516,9 @@ def parse_args() -> argparse.Namespace:
 	ap.add_argument('--recombination-rate', type=float, default=SimConfig.recombination_rate)
 	ap.add_argument('--mutation-rate', type=float, default=SimConfig.mutation_rate)
 
+	ap.add_argument('--n_generations', type=int, default=SimConfig.n_generations)
+	ap.add_argument('--samples_per_generation', type=float, default=SimConfig.samples_per_generation)
+
 	ap.add_argument('--seed', type=int, default=None, help='Random seed; if omitted, a random seed is chosen and recorded in meta.')
 	ap.add_argument('--masking-rate', type=float, default=SimConfig.masking_rate)
 	ap.add_argument('--output-dir', type=str, default=SimConfig.output_dir)
@@ -496,6 +548,8 @@ def args_to_config(args: argparse.Namespace) -> SimConfig:
 		sequence_length=args.sequence_length,
 		recombination_rate=args.recombination_rate,
 		mutation_rate=args.mutation_rate,
+		n_generations=args.n_generations,
+		samples_per_generation=args.samples_per_generation,
 		seed=seed,
 		masking_rate=args.masking_rate,
 		output_dir=args.output_dir,
