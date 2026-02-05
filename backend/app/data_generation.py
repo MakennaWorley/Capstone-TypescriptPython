@@ -170,71 +170,57 @@ def simulate_with_min_variants(cfg: SimConfig) -> Tuple[tskit.TreeSequence, SimC
 
 def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.ndarray):
 	"""
-	Generates two SVGs:
-	1. Truth: Shows haplotype ancestry (Blue/Orange).
-	2. Observed: Shows genotypes at the first site (0, 1, 2, or Missing/Grey).
+	Generates a single SVG with improved vertical spacing.
+	- Known: Filled blue circle.
+	- Masked: Outlined dotted blue circle.
 	"""
-	# Dynamic width: ensures at least 15px per sample node to avoid "Image too small"
+	# 1. Select only the first tree
+	tree = ts.first()
+
+	# 2. Dynamic sizing to prevent squishing
 	num_samples = ts.num_samples
 	dynamic_width = max(1200, num_samples * 15)
+	# Increase height to 1000 to give the tree breathing room vertically
+	dynamic_height = 1000
 
-	# Get actual node IDs for samples
 	sample_ids = ts.samples()
 
-	# --- IMAGE 1: TRUTH (Ancestry) ---
-	# We target each node ID specifically in the CSS style string
-	truth_styles = []
-	for i, node_id in enumerate(sample_ids):
-		# Even sample index -> Blue, Odd -> Orange
-		color = '#3498db' if i % 2 == 0 else '#e67e22'
-		truth_styles.append(f'.node.n{node_id} > .sym {{fill: {color};}}')
-
-	truth_style_str = '\n'.join(truth_styles)
-	svg_truth_path = f'{base_path}.truth.svg'
-
-	# Draw the Truth SVG
-	ts.draw_svg(path=svg_truth_path, size=(dynamic_width, 400), style=truth_style_str, node_labels={})
-
-	# --- IMAGE 2: OBSERVED (Genotypes at Site 0) ---
-	if ts.num_sites == 0:
-		print('   [Warning] No sites simulated; skipping Observed SVG.')
-		return
-
-	# obs_matrix shape is (sites x individuals). We look at the first site.
+	# 3. CSS for masking status
 	first_site_obs = obs_matrix[0, :]
 
-	obs_styles = []
+	styles = []
 	for i, val in enumerate(first_site_obs):
-		# Determine color based on dosage value in {0, 1, 2, NaN}
 		if np.isnan(val):
-			color = '#95a5a6'  # Grey (Missing/Masked)
-		elif val == 0:
-			color = '#2ecc71'  # Green
-		elif val == 1:
-			color = '#f1c40f'  # Yellow
-		elif val == 2:
-			color = '#e74c3c'  # Red
+			# Masked: Outlined dotted blue
+			style_props = 'fill: none; stroke: #3498db; stroke-width: 2; stroke-dasharray: 4,3;'
 		else:
-			color = '#95a5a6'  # Fallback
+			# Known: Filled blue
+			style_props = 'fill: #3498db; stroke: #3498db; stroke-width: 2;'
 
-		# Apply color to both haplotypes (nodes) of this diploid individual
 		node_idx_0 = 2 * i
 		node_idx_1 = 2 * i + 1
 
 		if node_idx_1 < len(sample_ids):
 			id0 = sample_ids[node_idx_0]
 			id1 = sample_ids[node_idx_1]
-			obs_styles.append(f'.node.n{id0} > .sym {{fill: {color};}}')
-			obs_styles.append(f'.node.n{id1} > .sym {{fill: {color};}}')
+			styles.append(f'.node.n{id0} > .sym {{ {style_props} }}')
+			styles.append(f'.node.n{id1} > .sym {{ {style_props} }}')
 
-	obs_style_str = '\n'.join(obs_styles)
-	svg_obs_path = f'{base_path}.observed.svg'
+	style_str = '\n'.join(styles)
+	svg_path = f'{base_path}.relationship.svg'
 
-	# Draw the Observed SVG
-	ts.draw_svg(path=svg_obs_path, size=(dynamic_width, 400), style=obs_style_str, node_labels={})
+	# 4. Draw with y_axis and y_scale to force vertical stretching
+	tree.draw_svg(
+		path=svg_path,
+		size=(dynamic_width, dynamic_height),
+		style=style_str,
+		node_labels={},
+		y_axis=False,
+		y_label='Generations (Rank)',
+		time_scale='rank',
+	)
 
-	print(f'   Truth SVG:    {svg_truth_path}')
-	print(f'   Observed SVG: {svg_obs_path} (Site 0)')
+	print(f'   Relationship SVG saved: {svg_path}')
 
 
 # -----------------------------
@@ -261,13 +247,23 @@ def haploid_to_diploid_dosage(G_hap: np.ndarray, ploidy: int) -> np.ndarray:
 
 def mask(X: np.ndarray, masking_rate: float, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:
 	"""
-	Mask entries randomly at masking_rate; return (masked, observed_mask).
-	observed_mask=True means value kept (observed).
+	Masks entire individuals (columns) at the masking_rate.
+	If an individual is masked, their entire vertical column becomes NaN.
 	"""
 	Xf = X.astype(float, copy=True)
-	observed_mask = rng.random(Xf.shape) >= masking_rate
-	Xf[~observed_mask] = np.nan
-	return Xf, observed_mask
+	num_individuals = Xf.shape[1]
+
+	# Generate a 1D mask: True means keep (observed), False means drop (masked)
+	# This samples once per individual
+	individual_observed = rng.random(num_individuals) >= masking_rate
+
+	# Apply the 1D mask across the 2D matrix
+	# If individual_observed[i] is False, Xf[:, i] becomes NaN
+	Xf[:, ~individual_observed] = np.nan
+
+	# Return the masked matrix and the mask itself
+	full_mask = np.tile(individual_observed, (Xf.shape[0], 1))
+	return Xf, full_mask
 
 
 def sites_table(ts: tskit.TreeSequence) -> pd.DataFrame:
