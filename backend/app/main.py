@@ -1,20 +1,18 @@
 import base64
-import sys
 import os
-import io
-import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+import sys
 from pathlib import Path
 from typing import List
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
-from data_generation import create_data_from_params
-from api import api_success, api_error
-from functions import get_dataset_names
+from api import api_error, api_success  # noqa: E402
+from data_generation import create_data_from_params  # noqa: E402
+from functions import get_dataset_names  # noqa: E402
 
 app = FastAPI()
 
@@ -87,7 +85,7 @@ async def list_datasets(request: Request):
 		)
 
 	except UnicodeDecodeError:
-		return api_error(message=f'Error: Could not find dataset list', status_code=500, code='DATASET_FILE_MISSING')
+		return api_error(message='Error: Could not find dataset list', status_code=500, code='DATASET_FILE_MISSING')
 
 	except Exception as e:
 		print(f'Error: Could not read dataset list: {str(e)}')
