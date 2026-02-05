@@ -38,6 +38,7 @@ import msprime
 import numpy as np
 import pandas as pd
 import tskit
+from graphviz import Digraph
 
 # -----------------------------
 # Configs
@@ -132,32 +133,87 @@ def dict_to_config(d: Dict[str, Any]) -> SimConfig:
 # -----------------------------
 
 
+def build_random_pedigree(cfg: SimConfig) -> tskit.TableCollection:
+	"""
+	Builds an explicit multi-generation pedigree where every non-founder has 2 parents,
+	and the whole cohort shares a small set of founders (so it's one connected family forest,
+	not 200 unrelated people).
+	"""
+	rng = np.random.default_rng(cfg.seed + 12345)
+
+	# How many individuals per generation
+	n_per_gen = int(cfg.samples_per_generation) if cfg.samples_per_generation is not None else int(cfg.n_diploid_samples)
+
+	# Make the oldest generation SMALL so everyone is related
+	n_founders = max(2, n_per_gen // 10)
+
+	pb = msprime.PedigreeBuilder()
+
+	# generation_ids[t] = list of individual ids at time t (t=0 are "children"/present)
+	generation_ids = {}
+
+	# Oldest generation = founders (no parents)
+	t_oldest = cfg.n_generations - 1
+	generation_ids[t_oldest] = [pb.add_individual(time=float(t_oldest), parents=None, is_sample=False) for _ in range(n_founders)]
+
+	# Work forward toward the present (t decreases)
+	# Each generation has n_per_gen individuals, each with two parents from t+1
+	for t in range(t_oldest - 1, -1, -1):
+		parents = generation_ids[t + 1]
+
+		# Create parent pairs (couples). Ensure we have enough pairs.
+		rng.shuffle(parents)
+		couples = []
+		for i in range(0, len(parents) - 1, 2):
+			couples.append((parents[i], parents[i + 1]))
+		if len(couples) == 0:
+			# fallback if only 1 founder (shouldn't happen due to max(2,...))
+			couples = [(parents[0], parents[0])]
+
+		# Make sure every parent is used at least once:
+		# assign children round-robin over couples.
+		k = len(couples)
+		gen_ids = []
+		for i in range(n_per_gen):
+			mom, dad = couples[i % k]
+			gen_ids.append(pb.add_individual(time=float(t), parents=[mom, dad], is_sample=(t == 0)))
+		generation_ids[t] = gen_ids
+
+	# Important: give the pedigree a sequence length so sim_ancestry can run
+	return pb.finalise(sequence_length=cfg.sequence_length)
+
+
+def promote_individual_nodes_to_samples(ts: tskit.TreeSequence, *, keep_existing=True) -> tskit.TreeSequence:
+	"""
+	Mark nodes belonging to *all individuals* as sample nodes AFTER simulation.
+	This avoids msprime's limitation (no internal samples in pedigree),
+	but still lets us export genotypes for ancestors via genotype_matrix().
+	"""
+	tables = ts.dump_tables()
+
+	if not keep_existing:
+		tables.nodes.flags[:] = tables.nodes.flags & ~tskit.NODE_IS_SAMPLE
+
+	# Nodes point to individuals via tables.nodes.individual
+	for node_id, node in enumerate(tables.nodes):
+		if node.individual != tskit.NULL:
+			tables.nodes.flags[node_id] |= tskit.NODE_IS_SAMPLE
+
+	return tables.tree_sequence()
+
+
 def simulate_tree_sequence(cfg: SimConfig) -> tskit.TreeSequence:
 	"""
-	Simulates ancestry with explicit sampled generations time=0..(n_generations-1),
-	so parent links exist across multiple generations in ts.individuals().
+	Simulates ancestry through an explicit pedigree so ind.parents is real.
+	Then overlays mutations.
 	"""
-	# Decide how many diploid individuals to sample each generation
-	if cfg.samples_per_generation is not None:
-		n_per_gen = cfg.samples_per_generation
-	else:
-		# fallback: evenly split n_diploid_samples across generations
-		n_per_gen = max(1, cfg.n_diploid_samples // cfg.n_generations)
+	pedigree = build_random_pedigree(cfg)
 
-	# Sample from Generation 0 (children) and Generation 1 (parents)
-	samples = samples = [msprime.SampleSet(n_per_gen, time=t, ploidy=cfg.ploidy) for t in range(cfg.n_generations)]
+	ts = msprime.sim_ancestry(initial_state=pedigree, model='fixed_pedigree', recombination_rate=cfg.recombination_rate, random_seed=cfg.seed)
 
-	ts = msprime.sim_ancestry(
-		samples=samples,
-		population_size=cfg.Ne,
-		sequence_length=cfg.sequence_length,
-		recombination_rate=cfg.recombination_rate,
-		random_seed=cfg.seed,
-		model='dtwf',  # Required for discrete generations and parent tracking
-	)
-
-	ts_mut = msprime.sim_mutations(ts, rate=cfg.mutation_rate, random_seed=cfg.seed + 1, model='binary')
-	return ts_mut
+	ts = msprime.sim_mutations(ts, rate=cfg.mutation_rate, random_seed=cfg.seed + 1, model='binary')
+	ts = promote_individual_nodes_to_samples(ts)
+	return ts
 
 
 def simulate_with_min_variants(cfg: SimConfig) -> Tuple[tskit.TreeSequence, SimConfig]:
@@ -177,8 +233,11 @@ def simulate_with_min_variants(cfg: SimConfig) -> Tuple[tskit.TreeSequence, SimC
 		if ts.num_sites >= cfg.min_variants:
 			return ts, cfg_try
 
-	# Fall back to last attempt if min_variants not reached
-	return last_ts, last_cfg
+	raise RuntimeError(
+		f'Failed to reach min_variants={cfg.min_variants} after max_retries={cfg.max_retries}. '
+		f'Last attempt had num_sites={0 if last_ts is None else last_ts.num_sites}. '
+		'Increase --sequence-length and/or --mutation-rate, or increase --max-retries.'
+	)
 
 
 def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.ndarray):
@@ -196,15 +255,11 @@ def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nd
 	# Increase height to 1000 to give the tree breathing room vertically
 	dynamic_height = 1000
 
-	sample_ids = ts.samples()
-
-	# 3. CSS for masking status
-	first_site_obs = obs_matrix[0, :]
-
+	# 3) Build CSS styles
 	styles = []
 	styles.append(
 		"""
-		/* Default for every node (ancestors included) */
+		/* Make every node visible (ancestors included) */
 		.node > .sym {
 		fill: #ffffff;
 		stroke: #555555;
@@ -212,7 +267,13 @@ def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nd
 		}
 		""".strip()
 	)
-	for i, val in enumerate(first_site_obs):
+
+	first_site_obs = obs_matrix[0, :]
+
+	for ind in ts.individuals():
+		# ind.id matches the column index in your diploid matrices (G_dip / G_obs)
+		val = first_site_obs[ind.id]
+
 		if np.isnan(val):
 			# Masked: outlined dotted blue
 			style_props = 'fill: none; stroke: #3498db; stroke-width: 2; stroke-dasharray: 4,3;'
@@ -220,41 +281,74 @@ def visualize_ancestry(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nd
 			# Known: filled blue
 			style_props = 'fill: #3498db; stroke: #3498db; stroke-width: 2;'
 
-		# Map individual index i -> its two sample nodes
-		node_idx_0 = 2 * i
-		node_idx_1 = 2 * i + 1
-
-		if node_idx_1 < len(sample_ids):
-			id0 = sample_ids[node_idx_0]
-			id1 = sample_ids[node_idx_1]
-			styles.append(f'.node.n{id0} > .sym {{ {style_props} }}')
-			styles.append(f'.node.n{id1} > .sym {{ {style_props} }}')
+		# IMPORTANT: style the actual sample nodes belonging to this individual
+		# (This works across multiple generations and does not assume sample ordering.)
+		for node_id in ind.nodes:
+			styles.append(f'.node.n{node_id} > .sym {{ {style_props} }}')
 
 	style_str = '\n'.join(styles)
 	svg_path = f'{base_path}.relationship.svg'
 
-	# 4. Labels (toggle this if you want less clutter)
-	label_internal_only = True
-
-	if label_internal_only:
-		# Label only internal nodes (ancestors)
-		node_labels = {u: f'n{u}@t{int(tree.time(u))}' for u in tree.nodes() if not tree.is_sample(u)}
-	else:
-		# Label all nodes (samples + ancestors)
-		node_labels = {u: f'n{u}@t{int(tree.time(u))}' for u in tree.nodes()}
-
-	# 5. Draw SVG
-	tree.draw_svg(
-		path=svg_path,
-		size=(dynamic_width, dynamic_height),
-		style=style_str,
-		node_labels=node_labels,
-		y_axis=False,
-		y_label='Generations (Rank)',
-		time_scale='rank',
-	)
+	# 4. Draw SVG
+	tree.draw_svg(path=svg_path, size=(dynamic_width, dynamic_height), style=style_str, y_axis=False, y_label='Generations (Rank)', time_scale='rank')
 
 	print(f'   Relationship SVG saved: {svg_path}')
+
+
+def draw_pedigree_svg(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.ndarray) -> None:
+	"""
+	Draw a pedigree-style family tree (individuals as nodes, parent->child edges),
+	layered by generation time. Colors nodes using obs_matrix masking at site 0:
+		- known: filled blue
+		- masked: dotted outline blue
+	"""
+	ped = []
+	for ind in ts.individuals():
+		p0 = ind.parents[0] if len(ind.parents) > 0 else -1
+		p1 = ind.parents[1] if len(ind.parents) > 1 else -1
+		ped.append((ind.id, int(ind.time), int(p0), int(p1)))
+
+	# Decide styling based on whether the individual's column is masked at site 0
+	# (If you changed observed to nullable ints, handle pd.NA too; but NaN works here.)
+	first_site_obs = obs_matrix[0, :]
+
+	g = Digraph('pedigree', format='svg')
+	g.attr(rankdir='TB', splines='polyline', nodesep='0.35', ranksep='0.75')
+	g.attr('node', shape='circle', width='0.35', fixedsize='true', fontsize='10')
+
+	# Create subgraphs per generation to force layering
+	times = sorted({t for _, t, _, _ in ped})
+	for t in times:
+		with g.subgraph(name=f'rank_t{t}') as sg:
+			sg.attr(rank='same')
+			for ind_id, ind_time, _, _ in ped:
+				if ind_time != t:
+					continue
+
+				val = first_site_obs[ind_id]
+				# masked?
+				masked = False
+				try:
+					masked = np.isnan(val)
+				except TypeError:
+					# handles pd.NA
+					masked = val is None
+
+				if masked:
+					sg.node(f'i{ind_id}', label=str(ind_id), style='dashed', color='#3498db', fontcolor='#3498db')
+				else:
+					sg.node(f'i{ind_id}', label=str(ind_id), style='filled', fillcolor='#3498db', color='#3498db', fontcolor='white')
+
+	# Parent -> child edges
+	for child_id, _, p0, p1 in ped:
+		if p0 != -1:
+			g.edge(f'i{p0}', f'i{child_id}')
+		if p1 != -1:
+			g.edge(f'i{p1}', f'i{child_id}')
+
+	out_path = f'{base_path}.pedigree.svg'
+	g.render(filename=out_path, cleanup=True)
+	print(f'   Pedigree SVG saved: {out_path}')
 
 
 # -----------------------------
@@ -273,12 +367,21 @@ def haploid_to_diploid_dosage(ts: tskit.TreeSequence) -> np.ndarray:
 	Now accepts the ploidy argument to match the caller.
 	"""
 	G_hap = ts.genotype_matrix()
+	sample_nodes = ts.samples()
+	node_to_col = {node_id: col for col, node_id in enumerate(sample_nodes)}
+
 	# G_hap columns are sample nodes. ts.individuals() iterates over people.
 	G_dip = np.zeros((ts.num_sites, ts.num_individuals), dtype=np.int8)
 
 	for ind in ts.individuals():
-		# ind.nodes contains the column indices in G_hap for this person
-		G_dip[:, ind.id] = np.sum(G_hap[:, ind.nodes], axis=1)
+		# ind.nodes are node IDs; convert to genotype-matrix column indices
+		cols = [node_to_col[n] for n in ind.nodes if n in node_to_col]
+
+		if len(cols) == 0:
+			# This individual has no sample nodes represented in genotype_matrix()
+			continue
+
+		G_dip[:, ind.id] = np.sum(G_hap[:, cols], axis=1)
 
 	return G_dip
 
@@ -398,6 +501,7 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 	# Mask at diploid-individual level
 	rng = np.random.default_rng(cfg_used.seed + 999)
 	G_obs, obs_mask = mask(G_dip, cfg_used.masking_rate, rng=rng)
+	draw_pedigree_svg(ts, os.path.join(cfg_used.output_dir, cfg_used.name), obs_mask)
 
 	# Build tables
 	df_sites = sites_table(ts)
