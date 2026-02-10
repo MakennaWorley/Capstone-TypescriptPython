@@ -44,32 +44,35 @@ run `source .venv/bin/activate` to activate the python environment.
 ```bash
 python data_generation.py \
   --name public \
-  --n-diploid-samples 500 \
-  --sequence-length 200000 \
-  --mutation-rate 1e-7 \
+  --n-diploid-samples 250 \
+  --sequence-length 100 \
+  --mutation-rate 1e-8 \
   --masking-rate 0.20 \
-  --seed 42
+  --seed 21
 ```
 
 Meta Replay (Reproducibility): To recreate an exact dataset using a previous run's metadata:
 
 ```bash
-python data_generation.py --meta-in my_simulations/population_run.run_metadata.json
+python data_generation.py --meta-in datasets/public.run_metadata.json
+```
+
+How to run the debugging file:
+
+```bash
+cd path/to/backend/app && python debug_genotypes.py
 ```
 
 ---
 
 ### 🧠 Understanding the Data
 
-| Column Name            | Description                                                                                                                                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`site_index`**       | A unique, zero-indexed integer assigned to each variant site identified during the simulation.                                                                              |
-| **`position`**         | The physical location of the mutation along the DNA sequence. This value will be between 0 and your specified `--sequence-length`.                                          |
-| **`ancestral_state`**  | The original genetic "letter" (allele) present in the population before any mutations occurred at that specific site.                                                       |
-| **`derived_state`**    | The new genetic "letter" (allele) that appeared due to a mutation. In these simulations, a "0" usually represents the ancestral state and "1" represents the derived state. |
-| **`ind_0000 - ind_n`** | Each column (e.g., ind_0000, ind_0001) corresponds to a single diploid individual.                                                                                          |
-| **`time`**             | (In Pedigree) The generation when the individual lived. 0 is the most recent generation.                                                                                    |
-| **`parent_x_id`**      | (In Pedigree) The IDs of the biological parents. Returns `-1` if the parent is outside the simulated generations.                                                           |
+| Column Name        | Description                                                                                                       |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| **`index`**        | A unique, zero-indexed integer assigned to each variant site identified during the simulation.                    |
+| **`i_0000 - i_n`** | Each column (e.g., ind_0000, ind_0001) corresponds to a single diploid individual.                                |
+| **`time`**         | (In Pedigree) The generation when the individual lived. 0 is the most recent generation.                          |
+| **`parent_x_id`**  | (In Pedigree) The IDs of the biological parents. Returns `-1` if the parent is outside the simulated generations. |
 
 #### Ind_XXXX Values
 

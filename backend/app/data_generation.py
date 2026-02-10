@@ -48,14 +48,16 @@ from graphviz import Digraph
 @dataclass(frozen=True)
 class SimConfig:
 	# Sampling / population parameters
-	n_diploid_samples: int = 200
+	n_diploid_samples: int = 250
 	Ne: int = 500
 	ploidy: int = 2
 
 	# Genome / simulation parameters
-	sequence_length: int = 100_000
-	recombination_rate: float = 1e-8
+	sequence_length: int = 100
 	mutation_rate: float = 1e-8
+
+	# Initial Diversity
+	founder_recessive_chance: float = 0.05
 
 	# Ancestry
 	n_generations: int = 5
@@ -160,10 +162,8 @@ def build_random_pedigree(cfg: SimConfig) -> tskit.TableCollection:
 		# Create parent pairs (couples). Ensure we have enough pairs.
 		rng.shuffle(parents)
 		couples = []
-		for i in range(0, len(parents) - 1, 2):
-			couples.append((parents[i], parents[i + 1]))
-		if len(couples) == 0:
-			# fallback if only 1 founder (shouldn't happen due to max(2,...))
+		couples = [(parents[i], parents[i + 1]) for i in range(0, len(parents) - 1, 2)]
+		if not couples:
 			couples = [(parents[0], parents[0])]
 
 		# Make sure every parent is used at least once:
@@ -190,10 +190,14 @@ def promote_individual_nodes_to_samples(ts: tskit.TreeSequence, *, keep_existing
 	if not keep_existing:
 		tables.nodes.flags[:] = tables.nodes.flags & ~tskit.NODE_IS_SAMPLE
 
-	# Nodes point to individuals via tables.nodes.individual
-	for node_id, node in enumerate(tables.nodes):
-		if node.individual != tskit.NULL:
-			tables.nodes.flags[node_id] |= tskit.NODE_IS_SAMPLE
+	# Mark nodes referenced by individuals as sample nodes
+	for ind in ts.individuals():
+		for n in ind.nodes:
+			tables.nodes.flags[n] |= tskit.NODE_IS_SAMPLE
+
+	# Ensure tables are properly sorted and indexed before building tree sequence
+	tables.sort()
+	tables.build_index()
 
 	return tables.tree_sequence()
 
@@ -205,10 +209,36 @@ def simulate_tree_sequence(cfg: SimConfig) -> tskit.TreeSequence:
 	"""
 	pedigree = build_random_pedigree(cfg)
 
-	ts = msprime.sim_ancestry(initial_state=pedigree, model='fixed_pedigree', recombination_rate=cfg.recombination_rate, random_seed=cfg.seed)
+	ts = msprime.sim_ancestry(initial_state=pedigree, model='fixed_pedigree', recombination_rate=cfg.mutation_rate, random_seed=cfg.seed)
 
-	ts = msprime.sim_mutations(ts, rate=cfg.mutation_rate, random_seed=cfg.seed + 1, model='binary')
 	ts = promote_individual_nodes_to_samples(ts)
+
+	# 1. Manually Inject Founder Mutations (Initial Diversity)
+	tables = ts.dump_tables()
+	rng = np.random.default_rng(cfg.seed + 777)
+
+	founder_nodes = []
+	max_time = max(ind.time for ind in ts.individuals())
+
+	for ind in ts.individuals():
+		if ind.time == max_time:
+			founder_nodes.extend(ind.nodes)
+
+	# 2. Initialize Sites and Inject Founder Alleles
+	mutation_count = 0
+	for pos in range(cfg.sequence_length):
+		site_id = tables.sites.add_row(position=pos, ancestral_state='0')
+
+		for node_id in founder_nodes:
+			# Check if this founder node inherits the recessive allele at this site
+			if rng.random() < cfg.founder_recessive_chance:
+				tables.mutations.add_row(site=site_id, node=node_id, derived_state='1')
+				mutation_count += 1
+
+	# Sort and build tree sequence with our mutations
+	tables.sort()
+	ts = tables.tree_sequence()
+
 	return ts
 
 
@@ -219,6 +249,10 @@ def draw_pedigree_svg(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nda
 		- known: filled blue
 		- masked: dotted outline blue
 	"""
+	if ts.num_individuals > 1000:
+		print('   Skipping Pedigree SVG: Population size too large for visualization.')
+		return
+
 	ped = []
 	for ind in ts.individuals():
 		p0 = ind.parents[0] if len(ind.parents) > 0 else -1
@@ -280,29 +314,48 @@ def genotype_matrix(ts: tskit.TreeSequence) -> np.ndarray:
 	return ts.genotype_matrix()
 
 
-def haploid_to_diploid_dosage(ts: tskit.TreeSequence) -> np.ndarray:
+def haploid_to_diploid_dosage(ts: tskit.TreeSequence, cfg: SimConfig) -> np.ndarray:
 	"""
-	Converts haploid genotype matrix (0/1) to diploid dosage (0/1/2).
-	Now accepts the ploidy argument to match the caller.
+	Creates a dense matrix for the entire sequence length.
+	Encoding follows msprime/tskit defaults (derived allele count):
+	0 = homozygous ancestral (0/0)
+	1 = heterozygous (0/1)
+	2 = homozygous derived (1/1)
+	Missing (-1) is defaulted to 0.
 	"""
-	G_hap = ts.genotype_matrix()
-	sample_nodes = ts.samples()
-	node_to_col = {node_id: col for col, node_id in enumerate(sample_nodes)}
-
-	# G_hap columns are sample nodes. ts.individuals() iterates over people.
-	G_dip = np.zeros((ts.num_sites, ts.num_individuals), dtype=np.int8)
-
+	all_nodes = []
 	for ind in ts.individuals():
-		# ind.nodes are node IDs; convert to genotype-matrix column indices
-		cols = [node_to_col[n] for n in ind.nodes if n in node_to_col]
+		if len(ind.nodes) == 2:
+			all_nodes.extend([int(ind.nodes[0]), int(ind.nodes[1])])
 
-		if len(cols) == 0:
-			# This individual has no sample nodes represented in genotype_matrix()
-			continue
+	# Genotype matrix for *these* nodes (sites x chosen_nodes)
+	G_hap = ts.genotype_matrix(samples=all_nodes)
+	num_inds = ts.num_individuals
+	G_dip_full = np.zeros((cfg.sequence_length, num_inds), dtype=np.int8)
 
-		G_dip[:, ind.id] = np.sum(G_hap[:, cols], axis=1)
+	# node_id -> column index in G_hap
+	node_to_column = {node_id: col_idx for col_idx, node_id in enumerate(all_nodes)}
 
-	return G_dip
+	# Iterate through every site
+	for site_idx, site in enumerate(ts.sites()):
+		site_pos = int(site.position)
+		if site_pos >= cfg.sequence_length:
+			continue  # Site outside matrix
+
+		for ind in ts.individuals():
+			if len(ind.nodes) != 2:
+				continue
+
+			n0, n1 = int(ind.nodes[0]), int(ind.nodes[1])
+			c0, c1 = node_to_column[n0], node_to_column[n1]
+
+			a0 = max(int(G_hap[site_idx, c0]), 0)
+			a1 = max(int(G_hap[site_idx, c1]), 0)
+
+			dosage = a0 + a1
+			G_dip_full[site_pos, ind.id] = dosage
+
+	return G_dip_full
 
 
 def mask(X: np.ndarray, masking_rate: float, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:
@@ -326,17 +379,9 @@ def mask(X: np.ndarray, masking_rate: float, rng: np.random.Generator) -> Tuple[
 	return Xf, full_mask
 
 
-def sites_table(ts: tskit.TreeSequence) -> pd.DataFrame:
-	"""Site index + position + ancestral + derived state (for debugging / joins)."""
-	rows = []
-	for site in ts.sites():
-		derived_char = ''
-		if site.mutations:
-			derived_char = site.mutations[0].derived_state
-		rows.append(
-			{'site_index': int(site.id), 'position': int(site.position), 'ancestral_state': site.ancestral_state, 'derived_state': derived_char}
-		)
-	return pd.DataFrame(rows)
+def sites_table(cfg: SimConfig) -> pd.DataFrame:
+	"""Creates a table for every single individual in the sequence"""
+	return pd.DataFrame({'index': np.arange(cfg.sequence_length)})
 
 
 def pedigree_table(ts: tskit.TreeSequence) -> pd.DataFrame:
@@ -412,26 +457,25 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 	ts = simulate_tree_sequence(cfg)
 
 	# Extract genotypes
-	G_hap = genotype_matrix(ts)
-	G_dip = haploid_to_diploid_dosage(ts)
-
-	# Mask at diploid-individual level
-	rng = np.random.default_rng(cfg.seed + 999)
-	G_obs, obs_mask = mask(G_dip, cfg.masking_rate, rng=rng)
-	draw_pedigree_svg(ts, os.path.join(cfg.output_dir, cfg.name), G_obs)
+	G_dip = haploid_to_diploid_dosage(ts, cfg)
 
 	# Build tables
-	df_sites = sites_table(ts)
+	df_sites = sites_table(cfg)
 	df_pedigree = pedigree_table(ts)
 	# write_genotypes_by_generation(ts=ts, G_dip=G_dip, df_sites=df_sites, output_dir=cfg.output_dir, name_prefix=cfg.name)
 
+	# Mask at diploid-individual level
+	rng = np.random.default_rng(cfg.seed + 999)
+	G_obs, _ = mask(G_dip, cfg.masking_rate, rng=rng)
+	draw_pedigree_svg(ts, os.path.join(cfg.output_dir, cfg.name), G_obs)
+
 	# DataFrames with consistent column naming
-	individual_cols = [f'ind_{i:04d}' for i in range(G_dip.shape[1])]
+	individual_cols = [f'i_{i:04d}' for i in range(G_dip.shape[1])]
 
 	df_truth = pd.DataFrame(G_dip, columns=individual_cols)
 	df_obs = pd.DataFrame(G_obs, columns=individual_cols)
 
-	genotype_cols = [c for c in df_obs.columns if c.startswith('ind_')]
+	genotype_cols = [c for c in df_obs.columns if c.startswith('i_')]
 	df_obs[genotype_cols] = df_obs[genotype_cols].astype('Int8')
 
 	# Prepend site columns
@@ -463,7 +507,6 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 		'ts_num_trees': int(ts.num_trees),
 		'ts_num_samples': int(ts.num_samples),
 		'sequence_length': float(ts.sequence_length),
-		'haploid_genotypes_shape': [int(G_hap.shape[0]), int(G_hap.shape[1])],
 		'diploid_dosage_shape': [int(G_dip.shape[0]), int(G_dip.shape[1])],
 		'masking_rate': float(cfg.masking_rate),
 		'observed_nonmasking_fraction': float(np.isfinite(G_obs).mean()),
@@ -532,8 +575,9 @@ def parse_args() -> argparse.Namespace:
 	ap.add_argument('--ploidy', type=int, default=SimConfig.ploidy)
 
 	ap.add_argument('--sequence-length', type=int, default=SimConfig.sequence_length)
-	ap.add_argument('--recombination-rate', type=float, default=SimConfig.recombination_rate)
 	ap.add_argument('--mutation-rate', type=float, default=SimConfig.mutation_rate)
+
+	ap.add_argument('--founder-recessive-chance', type=float, default=0.05)
 
 	ap.add_argument('--n_generations', type=int, default=SimConfig.n_generations)
 	ap.add_argument('--samples_per_generation', type=float, default=SimConfig.samples_per_generation)
@@ -562,8 +606,8 @@ def args_to_config(args: argparse.Namespace) -> SimConfig:
 		Ne=args.Ne,
 		ploidy=args.ploidy,
 		sequence_length=args.sequence_length,
-		recombination_rate=args.recombination_rate,
 		mutation_rate=args.mutation_rate,
+		founder_recessive_chance=args.founder_recessive_chance,
 		n_generations=args.n_generations,
 		samples_per_generation=args.samples_per_generation,
 		seed=seed,
@@ -609,6 +653,7 @@ def create_data() -> None:
 
 if __name__ == '__main__':
 	create_data()
+
 
 # -----------------------------
 # API
