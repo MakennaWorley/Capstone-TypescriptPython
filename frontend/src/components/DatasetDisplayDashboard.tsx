@@ -16,11 +16,6 @@ type CsvPreview = {
 type DashboardState = {
 	observedCsvRaw?: string;
 	truthCsvRaw?: string;
-
-	treesName?: string;
-	treesBase64?: string;
-	treesUrl?: string;
-	treesByteLength?: number;
 };
 
 type ApiEnvelope = { status: 'success'; data?: any; files?: any; message?: string } | { status: 'error'; message?: string; code?: string } | any;
@@ -103,6 +98,7 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 	const [data, setData] = useState<DashboardState>({});
 
 	const canLoad = datasets.length > 0 && selected.trim().length > 0 && !loading;
+	const hasLoadedDashboard = !!(data.observedCsvRaw || data.truthCsvRaw);
 
 	// Previews
 	const observedPreview = useMemo(() => {
@@ -166,21 +162,6 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 
 				next.truthCsvRaw = payload?.truth_genotypes_csv ?? payload?.truth_csv ?? payload?.truthGenotypesCsv ?? payload?.truth;
 
-				next.treesBase64 = payload?.trees_base64 ?? payload?.trees ?? payload?.treesB64;
-
-				next.treesUrl = payload?.trees_url ?? payload?.treesUrl;
-
-				next.treesName = payload?.trees_name ?? payload?.treesName ?? `${selected}.trees`;
-
-				// If treesBase64 exists, compute byte length
-				if (next.treesBase64) {
-					try {
-						next.treesByteLength = bytesFromBase64(next.treesBase64).byteLength;
-					} catch {
-						// ignore base64 issues; still allow user to inspect text
-					}
-				}
-
 				setData(next);
 				setStatus('Loaded!');
 				return;
@@ -200,21 +181,64 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 		}
 	}
 
-	function downloadTreesFromBase64() {
-		if (!data.treesBase64) return;
+	async function downloadAllDatasetZip() {
+		if (!selected) return;
 
-		const bytes = bytesFromBase64(data.treesBase64);
-		const blob = new Blob([bytes], { type: 'application/octet-stream' });
-		const href = URL.createObjectURL(blob);
+		setLoading(true);
+		setStatus('Preparing download...');
 
-		const a = document.createElement('a');
-		a.href = href;
-		a.download = data.treesName || 'dataset.trees';
-		document.body.appendChild(a);
-		a.click();
-		a.remove();
+		try {
+			// CHANGE THIS PATH if your endpoint name differs
+			const url = `${apiBase}/api/dataset/${encodeURIComponent(selected)}/download`;
 
-		URL.revokeObjectURL(href);
+			const resp = await fetch(url, {
+				method: 'GET',
+				headers: {
+					'x-api-key': xApiKey
+				}
+			});
+
+			if (!resp.ok) {
+				const contentType = resp.headers.get('content-type') || '';
+				let errMsg = `Download failed (${resp.status})`;
+
+				try {
+					if (contentType.includes('application/json')) {
+						const j = (await resp.json()) as ApiEnvelope;
+						errMsg = j?.message || errMsg;
+					} else {
+						errMsg = (await resp.text()) || errMsg;
+					}
+				} catch {
+					// ignore
+				}
+
+				setStatus(errMsg);
+				return;
+			}
+
+			const blob = await resp.blob();
+
+			// Try to respect Content-Disposition filename=...
+			const dispo = resp.headers.get('content-disposition') || '';
+			const match = dispo.match(/filename\*?=(?:UTF-8''|")?([^\";\n]+)\"?/i);
+			const filename = (match?.[1] ? decodeURIComponent(match[1]) : `${selected}.zip`).replace(/[/\\]/g, '_');
+
+			const href = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = href;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(href);
+
+			setStatus('Download started.');
+		} catch (e: any) {
+			setStatus(e?.message || 'Error downloading dataset');
+		} finally {
+			setLoading(false);
+		}
 	}
 
 	return (
@@ -249,32 +273,17 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 
 			{status && <p style={{ marginTop: '0.75rem' }}>{status}</p>}
 
-			{/* .trees section */}
-			{(data.treesBase64 || data.treesUrl) && (
+			{/* Download all dataset files */}
+			{hasLoadedDashboard && (
 				<div style={{ marginTop: '1rem', padding: '0.9rem', border: '1px solid #ddd', borderRadius: 10 }}>
-					<h4 style={{ marginTop: 0 }}>.trees</h4>
-					<p style={{ margin: 0 }}>
-						<b>Name:</b> {data.treesName || 'dataset.trees'}
-						{data.treesByteLength ? (
-							<>
-								{' '}
-								| <b>Size:</b> {data.treesByteLength.toLocaleString()} bytes
-							</>
-						) : null}
+					<h4 style={{ marginTop: 0 }}>Download</h4>
+					<p style={{ marginTop: 0, opacity: 0.8 }}>
+						Download a zip containing all files for <b>{selected}</b> (trees, truth, observed, pedigree, metadata).
 					</p>
 
-					<div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-						{data.treesBase64 && <button onClick={downloadTreesFromBase64}>Download .trees</button>}
-						{data.treesUrl && (
-							<a href={data.treesUrl} target="_blank" rel="noreferrer">
-								Open .trees
-							</a>
-						)}
-					</div>
-
-					<p style={{ marginTop: '0.75rem', opacity: 0.75 }}>
-						Note: tree sequences are binary; previewing them in-browser usually requires tskit tooling outside React.
-					</p>
+					<button onClick={downloadAllDatasetZip} disabled={loading || !selected}>
+						{loading ? 'Preparing…' : 'Download all data (.zip)'}
+					</button>
 				</div>
 			)}
 

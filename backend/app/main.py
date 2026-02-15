@@ -1,16 +1,27 @@
+import base64
+import io
 import os
 import sys
+import zipfile
 from pathlib import Path
 from typing import List
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
 from data_generation import create_data_from_params  # noqa: E402
-from functions import DashboardFilesMissing, api_error, api_success, get_dataset_dashboard_files, get_dataset_names  # noqa: E402
+from functions import (  # noqa: E402
+	DashboardFilesMissing,
+	api_error,
+	api_success,
+	get_all_dataset_files,
+	get_dataset_dashboard_files,
+	get_dataset_names,
+)
 
 app = FastAPI()
 
@@ -74,7 +85,7 @@ async def create_dataset(request: Request):
 
 # Get Dataset
 @app.get('/api/datasets/list', response_model=List[str])
-async def list_datasets(request: Request):
+async def list_datasets():
 	try:
 		dataset_names = get_dataset_names()
 
@@ -91,7 +102,7 @@ async def list_datasets(request: Request):
 
 
 @app.get('/api/dataset/{dataset_name}/dashboard')
-async def dataset_dashboard(dataset_name: str, request: Request):
+async def dataset_dashboard(dataset_name: str):
 	try:
 		data = get_dataset_dashboard_files(dataset_name, datasets_dir=DATASETS_DIR)
 
@@ -108,3 +119,38 @@ async def dataset_dashboard(dataset_name: str, request: Request):
 	except Exception as e:
 		print(f'Error: Dashboard fetch failed: {str(e)}')
 		return api_error(message='Unexpected server error while building dashboard response', status_code=500, code='DASHBOARD_FAILED')
+
+
+@app.get('/api/dataset/{dataset_name}/download')
+async def download_dataset(dataset_name: str):
+	"""
+	Download ALL dataset files as a single zip.
+	"""
+	try:
+		files = get_all_dataset_files(dataset_name, datasets_dir=DATASETS_DIR)
+
+		# Build zip in-memory
+		buf = io.BytesIO()
+		with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+			# Text files
+			zf.writestr(f'{dataset_name}.truth_genotypes.csv', files['truth_genotypes_csv'])
+			zf.writestr(f'{dataset_name}.observed_genotypes.csv', files['observed_genotypes_csv'])
+			zf.writestr(f'{dataset_name}.pedigree.csv', files['pedigree_csv'])
+			zf.writestr(f'{dataset_name}.run_metadata.json', files['run_metadata_json'])
+
+			# Binary trees (base64 -> bytes)
+			trees_bytes = base64.b64decode(files['trees_base64'])
+			zf.writestr(f'{dataset_name}.trees', trees_bytes)
+
+		buf.seek(0)
+
+		return StreamingResponse(buf, media_type='application/zip', headers={'Content-Disposition': f'attachment; filename="{dataset_name}.zip"'})
+
+	except DashboardFilesMissing as e:
+		return api_error(
+			message=f"Missing required files for dataset '{e.dataset_name}': {', '.join(e.missing)}", status_code=404, code='DATASET_FILES_MISSING'
+		)
+
+	except Exception as e:
+		print(f'Error: Dataset download failed: {str(e)}')
+		return api_error(message='Unexpected server error while building dataset zip', status_code=500, code='DATASET_ZIP_FAILED')
