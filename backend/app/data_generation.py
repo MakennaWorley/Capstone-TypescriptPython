@@ -9,20 +9,16 @@ What this script does:
    - Diploid dosage matrix: (sites x individuals), dosage in {0,1,2} for typical biallelic sites.
 4) Applies controlled masking to create "observed" data.
 5) Saves:
-   - *.trees (tree sequence for ground truth + reproducibility)
    - *.truth_genotypes.csv
    - *.observed_genotypes.csv
-   - *.sites.csv
-   - *.sample_metadata.csv
+   - *.pedigree.csv
    - *.run_metadata.json (reproducible: rerun from this)
-   - optional: *.run_metadata.txt (human readable)
+   - *.trees (tree sequence for ground truth + reproducibility)
+   - *.pedigree.svg
+
 
 Meta replay features:
 - --meta-in path.json  => loads params from previous run metadata JSON
-- --meta-out path.json => chooses meta output path
-- Merge behavior when both meta and CLI specify params:
-    Default: CLI wins (meta provides defaults, CLI overrides)
-    Option:  --meta-wins (meta overrides CLI)
 """
 
 from __future__ import annotations
@@ -421,27 +417,9 @@ def build_paths(cfg: SimConfig) -> Dict[str, str]:
 		'trees': f'{base}.trees',
 		'truth_csv': f'{base}.truth_genotypes.csv',
 		'observed_csv': f'{base}.observed_genotypes.csv',
-		'sites_csv': f'{base}.sites.csv',
 		'pedigree_csv': f'{base}.pedigree.csv',
 		'meta_json': f'{base}.run_metadata.json',
-		'meta_txt': f'{base}.run_metadata.txt',
 	}
-
-
-def write_meta_txt(path: str, cfg: SimConfig, derived: Dict[str, Any], outputs: Dict[str, str]) -> None:
-	"""Optional human-readable meta, similar to make_msprime_families style."""
-	with open(path, 'w', encoding='utf-8') as f:
-		f.write('# Run metadata (human readable)\n')
-		f.write(f'created_at={now_utc_iso()}\n\n')
-		f.write('[params]\n')
-		for k, v in sorted(config_to_dict(cfg).items()):
-			f.write(f'{k}={v}\n')
-		f.write('\n[derived]\n')
-		for k, v in sorted(derived.items()):
-			f.write(f'{k}={v}\n')
-		f.write('\n[outputs]\n')
-		for k, v in sorted(outputs.items()):
-			f.write(f'{k}={v}\n')
 
 
 # -----------------------------
@@ -449,7 +427,7 @@ def write_meta_txt(path: str, cfg: SimConfig, derived: Dict[str, Any], outputs: 
 # -----------------------------
 
 
-def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: Optional[str] = None) -> Dict[str, str]:
+def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None) -> Dict[str, str]:
 	"""
 	Generate a dataset and write outputs.
 	Returns output paths.
@@ -484,12 +462,6 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 
 	# Output paths
 	outputs = build_paths(cfg)
-	if meta_out is not None:
-		outputs['meta_json'] = meta_out
-		# keep txt aligned if user explicitly named json
-		if outputs['meta_txt'].endswith('.run_metadata.txt'):
-			# only override txt if the default naming convention was used
-			pass
 
 	# Persist tree sequence for ground truth
 	ts.dump(outputs['trees'])
@@ -497,10 +469,9 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 	# Persist CSVs
 	df_truth.to_csv(outputs['truth_csv'], index=False)
 	df_obs.to_csv(outputs['observed_csv'], index=False)
-	df_sites.to_csv(outputs['sites_csv'], index=False)
 	df_pedigree.to_csv(outputs['pedigree_csv'], index=False)
 
-	# Derived/run info (very helpful for reproducibility + debugging)
+	# Derived/run info
 	derived = {
 		'ts_num_sites': int(ts.num_sites),
 		'ts_num_mutations': int(ts.num_mutations),
@@ -521,9 +492,8 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 		'outputs': outputs,
 	}
 
-	# Save JSON meta (round-trippable)
+	# Save JSON meta
 	write_json(outputs['meta_json'], meta_payload)
-	write_meta_txt(outputs['meta_txt'], cfg, derived, outputs)
 
 	# Console summary
 	print('Generation complete.')
@@ -531,7 +501,6 @@ def run_generation(cfg: SimConfig, *, meta_in: Optional[str] = None, meta_out: O
 	print(f'   Truth:    {outputs["truth_csv"]}')
 	print(f'   Observed: {outputs["observed_csv"]}')
 	print(f'   Meta:     {outputs["meta_json"]}')
-	print(f'   Sites:    {outputs["sites_csv"]}')
 	print(f'   Pedigree: {outputs["pedigree_csv"]}')
 	print(f'   Variants: {ts.num_sites}')
 
@@ -679,15 +648,12 @@ def build_config_from_params(params: Dict[str, Any]) -> 'SimConfig':
 	return SimConfig(**filtered_params)
 
 
-def create_data_from_params(
-	params: Dict[str, Any], *, meta_in: Optional[str] = None, meta_out: Optional[str] = None, meta_wins: bool = False
-) -> Dict[str, Any]:
+def create_data_from_params(params: Dict[str, Any], *, meta_in: Optional[str] = None) -> Dict[str, Any]:
 	"""
 	Programmatic equivalent of create_data(), designed for API usage.
 
 	params: dict from request body
 	meta_in: optional path to a meta JSON to replay
-	meta_out: optional path to write meta JSON (if you do metadata logging)
 	meta_wins: if True and meta_in provided, meta overrides params
 	"""
 	if meta_in:

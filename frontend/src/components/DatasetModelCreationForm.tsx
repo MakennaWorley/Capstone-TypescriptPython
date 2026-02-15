@@ -142,7 +142,7 @@ export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = 
 				<legend>Basic</legend>
 
 				<label style={{ display: 'grid', gap: 6 }}>
-					Dataset name (alphanumeric, no spaces) <span style={{ color: 'crimson' }}>*</span>
+					Dataset name (alphanumeric, no spaces)
 					<input
 						value={cfg.name}
 						onChange={(e) => update('name', e.target.value)}
@@ -153,12 +153,12 @@ export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = 
 
 				<label style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', cursor: 'pointer' }}>
 					<input type="checkbox" checked={cfg.full_data} onChange={(e) => update('full_data', e.target.checked)} />
-					<span style={{ fontWeight: 'bold' }}>Generate datasets for training a model</span>
+					<span>Generate datasets for training a model</span>
 				</label>
 
 				<label style={{ display: 'flex', gap: 8, marginTop: 12 }}>
 					<input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} />
-					Advanced (scale individuals)
+					Advanced Settings (scale individuals)
 				</label>
 			</fieldset>
 
@@ -197,14 +197,14 @@ export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = 
 						</label>
 					</div>
 
-					<p style={{ fontSize: '0.9rem', color: '#555', marginTop: 10 }}>
-						Total individuals (derived): <strong>{derivedTotal ?? '—'}</strong> (sent as <code>n_diploid_samples</code>)
+					<p style={{ fontSize: '0.9rem', marginTop: 10 }}>
+						Total individuals: <strong>{derivedTotal ?? '—'}</strong>
 					</p>
 				</fieldset>
 			)}
 
 			<button type="submit" disabled={sending || errors.length > 0} style={{ padding: '0.75rem' }}>
-				{sending ? 'Generating...' : 'Send to backend'}
+				{sending ? 'Generating...' : 'Generate Data'}
 			</button>
 
 			{status && <p>{status}</p>}

@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-02-10T03:07:08.124323Z",
+  "created_at": "2026-02-10T19:53:22.970204Z",
   "derived": {
     "diploid_dosage_shape": [
       100,
@@ -19,7 +19,6 @@
     "meta_txt": "datasets/public.run_metadata.txt",
     "observed_csv": "datasets/public.observed_genotypes.csv",
     "pedigree_csv": "datasets/public.pedigree.csv",
-    "sites_csv": "datasets/public.sites.csv",
     "trees": "datasets/public.trees",
     "truth_csv": "datasets/public.truth_genotypes.csv"
   },
