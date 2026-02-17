@@ -1,35 +1,30 @@
 import base64
 import io
 import os
-import sys
 import zipfile
 from pathlib import Path
 from typing import List
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
+from .data_generation import create_data_from_params
+from .functions import DashboardFilesMissing, api_error, api_success, get_all_dataset_files, get_dataset_dashboard_files, get_dataset_names
 
-from data_generation import create_data_from_params  # noqa: E402
-from functions import (  # noqa: E402
-	DashboardFilesMissing,
-	api_error,
-	api_success,
-	get_all_dataset_files,
-	get_dataset_dashboard_files,
-	get_dataset_names,
-)
+BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent
+load_dotenv(dotenv_path=ROOT_DIR / '.env')
 
 app = FastAPI()
 
-origins = os.getenv('CORS_ORIGINS', 'http://localhost:5173,http://localhost:8501').split(',')
-app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in origins], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+origins = os.getenv('CORS_ORIGINS', '')
+origins_list = [o.strip() for o in origins.split(',') if o.strip()]
 
-BASE_DIR = Path(__file__).resolve().parent
-DATASETS_DIR = BASE_DIR / 'datasets'
+app.add_middleware(CORSMiddleware, allow_origins=origins_list, allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+
+DATASETS_DIR = Path(os.getenv('DATASETS_DIR')).resolve()
 
 
 # debugging
