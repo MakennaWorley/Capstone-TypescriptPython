@@ -1,6 +1,5 @@
 [tool.ruff]
 line-length = 150
-indent-width = 4
 target-version = "py312"
 
 [tool.ruff.format]

@@ -32,3 +32,4 @@ backend/app/datasets/
 backend/app/datasets_archive/
 .ruff_cache
 frontend/coverage/
+backend/app/models/

@@ -66,7 +66,6 @@ def evaluate_and_graph_clf(model, X_train, y_train, X_test, y_test, name, graph)
 		axes[1].grid(True, alpha=0.3)
 
 		plt.tight_layout()
-		plt.show()
 
 	return {'model': name, 'accuracy': test_acc, 'auc': test_auc, 'average_precision': test_ap, 'train_accuracy': train_acc, 'train_auc': train_auc}
 
@@ -133,6 +132,5 @@ def evaluate_and_graph_reg(model, X_train, y_train, X_test, y_test, name, graph)
 		axs[1, 1].set_title('QQ Plot')
 
 		plt.tight_layout()
-		plt.show()
 
 	return {'model': name, 'rmse_train': rmse_train, 'rmse_test': rmse_test, 'r2_train': r2_train, 'r2_test': r2_test}
