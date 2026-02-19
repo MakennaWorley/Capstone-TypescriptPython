@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import dataclasses
 import json
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import arviz as az
 import data_preparation
-import graph_model_functions
 import matplotlib
+import model_graph_functions
 import numpy as np
 import pymc as pm
 from sklearn.model_selection import KFold
@@ -128,25 +128,23 @@ class BayesianLinearDosageRegressor:
 
 		Xz, mu, sd = standardize_fit(X)
 
-		# Guard
-		Xz = np.clip(Xz, -10.0, 10.0)
-
 		self.feature_mean_ = mu
 		self.feature_std_ = sd
 		n_groups = len(np.unique(groups))
 
-		n, k = Xz.shape
-
 		with pm.Model() as model:
-			# Hierarchical Priors (Population Level)
+			# 1. Define Hierarchical Priors (Population Level) FIRST
 			mu_alpha = pm.Normal('mu_alpha', mu=0.0, sigma=1.0)
 			sigma_alpha = pm.HalfNormal('sigma_alpha', sigma=1.0)
 
-			# Group-specific intercepts (Ancestry branches)
+			# 2. Define Group-specific intercepts (Ancestry branches)
 			intercepts = pm.Normal('intercepts', mu=mu_alpha, sigma=sigma_alpha, shape=n_groups)
+
+			# 3. Define Global coefficients and noise
 			coef = pm.Normal('coef', mu=0.0, sigma=1.0, shape=Xz.shape[1])
 			sigma = pm.HalfNormal('sigma', sigma=1.0)
 
+			# 4. Calculation: intercepts[groups] broadcasts to flattened site-level data
 			mu_y = intercepts[groups] + pm.math.dot(Xz, coef)
 			pm.Normal('y', mu=mu_y, sigma=sigma, observed=y)
 
@@ -256,14 +254,15 @@ class BayesianCategoricalDosageClassifier:
 		C = 3
 
 		with pm.Model() as model:
-			# Hierarchical Priors for the Intercepts
+			# 1. Define Hierarchical Priors for category intercepts
 			mu_b = pm.Normal('mu_b', mu=0.0, sigma=1.0, shape=C)
 			sigma_b = pm.HalfNormal('sigma_b', sigma=1.0, shape=C)
 
-			# Group-level intercepts
+			# 2. Define Group-level intercepts per category
 			b = pm.Normal('b', mu=mu_b, sigma=sigma_b, shape=(n_groups, C))
 			W = pm.Normal('W', mu=0.0, sigma=1.0, shape=(Xz.shape[1], C))
 
+			# 3. Logits calculation using the group indices
 			logits = b[groups] + pm.math.dot(Xz, W)
 			pm.Categorical('y', logit_p=logits, observed=y_int)
 
@@ -363,81 +362,98 @@ class _NoRefitProxy:
 		return self._m.predict(X)
 
 
-def _prep_triplet(
-	base_name: str, prep_cfg: data_preparation.PrepConfig
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-	triplet = data_preparation.prepare_data_triplet(base_name, prep_cfg)
-
-	X_train, y_train = flatten_examples(triplet['train']['X'], triplet['train']['y'])
-	X_val, y_val = flatten_examples(triplet['val']['X'], triplet['val']['y'])
-	X_test, y_test = flatten_examples(triplet['test']['X'], triplet['test']['y'])
-
-	# Extract and flatten the hierarchy/group IDs
-	groups = {}
-	for split, X_set in [('train', X_train), ('val', X_val), ('test', X_test)]:
-		if 'groups' in triplet[split]:
-			groups[split] = triplet[split]['groups'].flatten().astype(int)
-		else:
-			# Fallback: Assign everyone to Group 0 (Non-hierarchical mode)
-			print(f"Warning: 'groups' key missing in {split} split. Using default Group 0.")
-			groups[split] = np.zeros(X_set.shape[0], dtype=int)
-
-	return X_train, y_train, X_val, y_val, X_test, y_test, groups
-
-
 def train_with_cross_val(base_name, model_kind, prep_cfg, n_splits=5, models_dir='models'):
 	"""
-	Performs K-Fold CV on the combined training and validation sets
-	and returns a model fit on the full combined dataset.
+	Performs K-Fold CV using the entirety of a single file.
 	"""
-	X_train, y_train, X_val, y_val, X_test, y_test, groups = _prep_triplet(base_name, prep_cfg)
-
-	# Combine train and val: the model updates on all available non-test data
-	X_all = np.concatenate([X_train, X_val], axis=0)
-	y_all = np.concatenate([y_train, y_val], axis=0)
-	groups_all = np.concatenate([groups['train'], groups['val']], axis=0)
+	# Load the whole file as one block
+	X_all, y_all, groups_all = load_whole_dataset(base_name, prep_cfg)
 
 	kf = KFold(n_splits=n_splits, shuffle=True, random_state=123)
-
-	print(f'\n--- Starting {n_splits}-Fold Cross-Validation for {model_kind} ---')
+	print(f'\n--- CV on {base_name} ({n_splits} Folds) ---')
 
 	for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
 		X_t, X_v = X_all[train_idx], X_all[val_idx]
 		y_t, y_v = y_all[train_idx], y_all[val_idx]
 		g_t = groups_all[train_idx]
 
-		# Temporary model for fold validation
-		if model_kind == 'linear':
-			fold_model = BayesianLinearDosageRegressor()
-		else:
-			fold_model = BayesianCategoricalDosageClassifier()
+		fold_model = BayesianLinearDosageRegressor() if model_kind == 'linear' else BayesianCategoricalDosageClassifier()
 
 		fold_model.fit(X_t, y_t, groups=g_t)
 
-		# Calculate metrics for monitoring
 		y_pred = fold_model.predict(X_v)
 		mse = np.mean((y_v - y_pred) ** 2)
 		print(f'Fold {fold + 1} MSE: {mse:.4f}')
 
-	# Final Step: Return a model fit on the ENTIRE combined pool
-	print(f'--- Fitting final {model_kind} model on all CV data ---')
-	if model_kind == 'linear':
-		final_model = BayesianLinearDosageRegressor()
-	else:
-		final_model = BayesianCategoricalDosageClassifier()
-
+	# Return model fit on the whole file
+	final_model = BayesianLinearDosageRegressor() if model_kind == 'linear' else BayesianCategoricalDosageClassifier()
 	final_model.fit(X_all, y_all, groups=groups_all)
 	return final_model
 
 
+def load_whole_dataset(base_name: str, prep_cfg: data_preparation.PrepConfig):
+	"""
+	Loads a dataset file and flattens it completely without looking for
+	train/val/test sub-splits.
+	"""
+	# Create a NEW config instance because the original is frozen
+	# This copies all settings from prep_cfg but updates the dataset_name
+	current_cfg = dataclasses.replace(prep_cfg, dataset_name=base_name)
+
+	# Pass the updated config to prepare_data
+	data = data_preparation.prepare_data(current_cfg)
+
+	X_raw = data['X']
+	y_raw = data['y']
+
+	X, y = flatten_examples(X_raw, y_raw)
+
+	if 'groups' in data:
+		n_sites = X_raw.shape[1]
+		groups = np.repeat(data['groups'].flatten().astype(int), n_sites)
+	else:
+		groups = np.zeros(X.shape[0], dtype=int)
+
+	return X, y, groups
+
+
+def run_custom_pipeline(train_file, val_file, test_file, model_kind='linear'):
+	prep_cfg = data_preparation.PrepConfig()
+
+	# 1. TRAINING: Use all data in the training file
+	X_train, y_train, g_train = load_whole_dataset(train_file, prep_cfg)
+	if model_kind == 'linear':
+		model = BayesianLinearDosageRegressor()
+	else:
+		model = BayesianCategoricalDosageClassifier()
+
+	print(f'Phase 1: Training on {train_file}')
+	model.fit(X_train, y_train, groups=g_train)
+
+	# 2. VALIDATION: Use cross-validation on the validation file to update the model
+	print(f'Phase 2: Updating model with CV on {val_file}')
+	# We pass the existing model or refit using the logic in train_with_cross_val
+	X_val, y_val, g_val = load_whole_dataset(val_file, prep_cfg)
+	model.fit(X_val, y_val, groups=g_val)  # Or your KFold logic
+
+	# 3. TESTING: Purely unseen data
+	X_test, y_test, _ = load_whole_dataset(test_file, prep_cfg)
+	print(f'Phase 3: Testing on {test_file}')
+	predictions = model.predict(X_test)
+
+	# Calculate final metrics...
+	return predictions
+
+
 def train_eval_one(
-	base_name: str,
+	train_base: str,
+	val_base: str,
+	test_base: str,
 	model_kind: str,
 	*,
 	prep_cfg: Optional[data_preparation.PrepConfig] = None,
 	models_dir: str | Path = 'models',
 	force_retrain: bool = False,
-	graph: bool = True,
 	draws: int = 1000,
 	tune: int = 1000,
 	chains: int = 2,
@@ -447,87 +463,59 @@ def train_eval_one(
 	if prep_cfg is None:
 		prep_cfg = data_preparation.PrepConfig(dataset_name='unused')
 
-	X_train, y_train, X_val, y_val, X_test, y_test, groups = _prep_triplet(base_name, prep_cfg)
-
+	# 1. Setup Model Types
 	if model_kind == 'linear':
 		ModelCls = BayesianLinearDosageRegressor
-		model_tag = BayesianLinearDosageRegressor().tag
+		model_tag = 'bayes_linear'
 	elif model_kind == 'softmax3':
 		ModelCls = BayesianCategoricalDosageClassifier
-		model_tag = BayesianCategoricalDosageClassifier().tag
+		model_tag = 'bayes_softmax3'
 	else:
 		raise ValueError("model_kind must be 'linear' or 'softmax3'")
 
-	paths = model_paths(models_dir, base_name, model_tag)
+	paths = model_paths(models_dir, train_base, model_tag)
+
+	# 2. PHASE 1: INITIAL TRAINING (Using the entire training file)
+	X_train, y_train, groups_train = load_whole_dataset(train_base, prep_cfg)
 
 	if (not force_retrain) and paths['meta'].exists() and paths['idata'].exists():
+		print(f'Loading existing model from {paths["meta"]}')
 		model = ModelCls.load(paths)
 		trained = False
 	else:
-		# Check if we are dealing with validation data to trigger cross-validation
-		if 'validation' in base_name.lower():
-			print(f"Validation detected in '{base_name}'. Updating model using cross-validation...")
-			model = train_with_cross_val(base_name, model_kind, prep_cfg, models_dir=models_dir)
-		else:
-			model = ModelCls(draws=draws, tune=tune, chains=chains, target_accept=target_accept, random_seed=seed)
-			model.fit(X_train, y_train, groups=groups['train'])
-
+		print(f'--- Phase 1: Training on {train_base} ---')
+		model = ModelCls(draws=draws, tune=tune, chains=chains, target_accept=target_accept, random_seed=seed)
+		model.fit(X_train, y_train, groups=groups_train)
 		trained = True
-		model.get_calibration_data()
-		model.save(paths, extra_meta={'base_name': base_name, 'prep_cfg': asdict(prep_cfg)})
 
-	proxy = _NoRefitProxy(model)
+	# 3. PHASE 2: CROSS-VALIDATION UPDATE (Using the entire validation file)
+	print(f'--- Phase 2: Updating with CV on {val_base} ---')
+	# This calls your KFold logic on the dedicated validation file
+	model = train_with_cross_val(val_base, model_kind, prep_cfg)
 
-	# --- Validation Step ---
-	print(f'\n=== {model_tag.upper()} (Validation) ===')
-	val_metrics = graph_model_functions.evaluate_and_graph_reg(
-		proxy, X_train, y_train, X_val, y_val, name=f'{model_tag}[{base_name}] (val)', graph=True
-	)
+	model.save(paths, extra_meta={'train_src': train_base, 'val_src': val_base})
 
-	# --- Validation Graph ---
-	if paths['graph_val']:
-		plt.savefig(paths['graph_val'])
-		print(f'Graph saved to: {paths["graph_val"]}')
-	plt.close()
+	# 4. PHASE 3: TESTING (Evaluating on unseen data)
+	print(f'--- Phase 3: Final Testing on {test_base} ---')
+	X_test, y_test, _ = load_whole_dataset(test_base, prep_cfg)
 
-	# --- Test Step ---
-	print(f'\n=== {model_tag.upper()} (Test) ===')
-	test_metrics = graph_model_functions.evaluate_and_graph_reg(
-		proxy, X_train, y_train, X_test, y_test, name=f'{model_tag}[{base_name}] (test)', graph=True
-	)
+	test_metrics = model_graph_functions.evaluate_and_graph_reg(model, X_test, y_test, name=f'{model_tag}_Unseen_Test', graph=True)
 
-	# --- Test Graph ---
-	plt.savefig(paths['graph_test'])
-	plt.close()
+	if paths['graph_test']:
+		plt.savefig(paths['graph_test'])
+		plt.close()
 
-	extra = {}
-	if model_kind == 'softmax3':
-		yv = coerce_dosage_classes(y_val)
-		yt = coerce_dosage_classes(y_test)
-		val_acc = (model.predict_class(X_val) == yv).mean()
-		test_acc = (model.predict_class(X_test) == yt).mean()
-		extra['val_accuracy'] = float(val_acc)
-		extra['test_accuracy'] = float(test_acc)
-		print(f'\n[softmax3] val accuracy:  {val_acc:.4f}')
-		print(f'[softmax3] test accuracy: {test_acc:.4f}')
-
-	return {
-		'model_kind': model_kind,
-		'trained': trained,
-		'paths': {k: str(v) for k, v in paths.items() if k != 'dir'},
-		'val': val_metrics,
-		'test': test_metrics,
-		**extra,
-	}
+	return {'model_kind': model_kind, 'trained': trained, 'test_metrics': test_metrics, 'paths': {k: str(v) for k, v in paths.items() if k != 'dir'}}
 
 
 def train_eval_both(
-	base_name: str,
+	train_base: str,
+	val_base: str,
+	test_base: str,
 	*,
 	prep_cfg: Optional[data_preparation.PrepConfig] = None,
 	models_dir: str | Path = 'models',
 	force_retrain: bool = False,
-	graph: bool = True,
 	draws: int = 1000,
 	tune: int = 1000,
 	chains: int = 2,
@@ -535,12 +523,13 @@ def train_eval_both(
 	seed: int = 123,
 ) -> Dict[str, Any]:
 	out_linear = train_eval_one(
-		base_name,
-		'linear',
+		train_base,
+		val_base,
+		test_base,
+		model_kind='linear',
 		prep_cfg=prep_cfg,
 		models_dir=models_dir,
 		force_retrain=force_retrain,
-		graph=graph,
 		draws=draws,
 		tune=tune,
 		chains=chains,
@@ -549,12 +538,13 @@ def train_eval_both(
 	)
 
 	out_softmax = train_eval_one(
-		base_name,
-		'softmax3',
+		train_base,
+		val_base,
+		test_base,
+		model_kind='softmax3',
 		prep_cfg=prep_cfg,
 		models_dir=models_dir,
 		force_retrain=force_retrain,
-		graph=graph,
 		draws=draws,
 		tune=tune,
 		chains=chains,
@@ -584,13 +574,11 @@ def test_on_new_data(model, dataset_name: str, prep_cfg: Optional[data_preparati
 
 	# 3. Use the existing evaluation utility to get metrics and plots
 	# This uses model.predict() internally, which applies stored feature_mean_ and feature_std_
-	metrics = graph_model_functions.evaluate_and_graph_reg(proxy, None, None, X_raw, y_raw, name=f'External_Test_{dataset_name}', graph=True)
+	metrics = model_graph_functions.evaluate_and_graph_reg(proxy, X_raw, y_raw, name=f'External_Test_{dataset_name}', graph=True)
 
 	return metrics
 
 
 if __name__ == '__main__':
-	results = train_eval_both(
-		base_name='testing', models_dir='models', force_retrain=False, graph=False, draws=1000, tune=1000, chains=4, target_accept=0.9, seed=123
-	)
-	print('\nDone:', results)
+	training_file, validation_file, testing_file = 'testing.training', 'testing.validation', 'testing.testing'
+	results = train_eval_both(train_base=training_file, val_base=validation_file, test_base=testing_file, force_retrain=True)
