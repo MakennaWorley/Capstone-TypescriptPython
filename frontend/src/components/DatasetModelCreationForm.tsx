@@ -89,12 +89,11 @@ export default function DatasetModelCreationForm({ apiBase, xApiKey, endpoint = 
 				full_data: cfg.full_data
 			};
 
-			// Only include scaling knobs if Advanced is enabled
+			// Only include parameters if Advanced is enabled
 			if (advanced) {
 				params.n_generations = cfg.n_generations;
 				params.samples_per_generation = cfg.samples_per_generation;
 
-				// Helpful for the backend as a single “total individuals” value
 				if (derivedTotal !== undefined) {
 					params.n_diploid_samples = derivedTotal;
 				}

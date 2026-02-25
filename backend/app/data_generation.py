@@ -162,8 +162,7 @@ def build_random_pedigree(cfg: SimConfig) -> tskit.TableCollection:
 		parents = generation_ids[t + 1]
 
 		# Calculate how many individuals we need in this generation
-		# If we're behind target, generate more; if ahead, generate fewer
-		generations_left = t + 1  # including this one
+		generations_left = t + 1
 		individuals_needed = max(0, target_total - total_individuals)
 
 		if generations_left > 0:
@@ -291,7 +290,7 @@ def draw_pedigree_svg(ts: tskit.TreeSequence, base_path: str, obs_matrix: np.nda
 		for ind_id in range(num_individuals):
 			column = obs_matrix[:, ind_id]
 			# An individual is considered masked if their entire column is NaN
-			# We use np.all(np.isnan(...)) to handle the stochastically dropped columns
+			# Use np.all(np.isnan(...)) to handle the stochastically dropped columns
 			if np.all(np.isnan(column.astype(float))):
 				is_masked[ind_id] = True
 

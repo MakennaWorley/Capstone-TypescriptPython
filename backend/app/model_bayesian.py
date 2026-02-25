@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
 import json
 import multiprocessing
@@ -90,6 +91,27 @@ def load_meta(paths: Dict[str, Path]) -> Dict[str, Any]:
 	return json.loads(paths['meta'].read_text(encoding='utf-8'))
 
 
+def _run_fold_parallel(args):
+	"""Helper function to run a single fold in a separate process."""
+	fold_idx, train_idx, val_idx, X_all, y_all, groups_all, model_kind = args
+
+	X_t, X_v = X_all[train_idx], X_all[val_idx]
+	y_t, y_v = y_all[train_idx], y_all[val_idx]
+	g_t = groups_all[train_idx]
+
+	# Force cores=1 to avoid nested multiprocessing issues
+	if model_kind == 'linear':
+		fold_model = BayesianLinearDosageRegressor(chains=4, draws=500, tune=500, cores=1)
+	else:
+		fold_model = BayesianCategoricalDosageClassifier(chains=4, draws=500, tune=500, cores=1)
+
+	fold_model.fit(X_t, y_t, groups=g_t)
+
+	y_pred = fold_model.predict(X_v)
+	mse = np.mean((y_v - y_pred) ** 2)
+	return fold_idx, mse
+
+
 # -----------------------------
 # Model 1: Bayesian Linear Dosage Regression
 # -----------------------------
@@ -105,6 +127,7 @@ class BayesianLinearDosageRegressor:
 		target_accept: float = 0.9,
 		random_seed: int = 123,
 		clip_to_dosage_range: bool = True,
+		cores: int = 4,
 	):
 		self.draws = draws
 		self.tune = tune
@@ -112,6 +135,7 @@ class BayesianLinearDosageRegressor:
 		self.target_accept = target_accept
 		self.random_seed = random_seed
 		self.clip_to_dosage_range = clip_to_dosage_range
+		self.cores = cores
 
 		self.idata: Optional[az.InferenceData] = None
 		self.feature_mean_: Optional[np.ndarray] = None
@@ -157,9 +181,9 @@ class BayesianLinearDosageRegressor:
 				target_accept=self.target_accept,
 				random_seed=self.random_seed,
 				return_inferencedata=True,
-				progressbar=True,
+				progressbar=False,
 				# Added this to prevent EOFErrror on macbook
-				cores=1,
+				cores=self.cores,
 			)
 
 		self._coef_mean = self.idata.posterior['coef'].mean(axis=(0, 1)).values
@@ -240,12 +264,13 @@ class BayesianCategoricalDosageClassifier:
 	  - predict(X): expected dosage E[y] for compatibility with regression plotting
 	"""
 
-	def __init__(self, *, draws: int = 1000, tune: int = 1000, chains: int = 2, target_accept: float = 0.9, random_seed: int = 123):
+	def __init__(self, *, draws: int = 1000, tune: int = 1000, chains: int = 4, target_accept: float = 0.9, random_seed: int = 123, cores: int = 4):
 		self.draws = draws
 		self.tune = tune
 		self.chains = chains
 		self.target_accept = target_accept
 		self.random_seed = random_seed
+		self.cores = cores
 
 		self.idata: Optional[az.InferenceData] = None
 		self.feature_mean_: Optional[np.ndarray] = None
@@ -290,6 +315,7 @@ class BayesianCategoricalDosageClassifier:
 				target_accept=self.target_accept,
 				random_seed=self.random_seed,
 				return_inferencedata=True,
+				cores=self.cores,
 			)
 
 		self._W_mean = self.idata.posterior['W'].mean(axis=(0, 1)).values
@@ -376,7 +402,7 @@ class BayesianCategoricalDosageClassifier:
 
 class _NoRefitProxy:
 	"""
-	graph_model_functions.evaluate_and_graph_reg calls .fit().
+	graph_model_functions.evaluate_and_graph_clf calls .fit().
 	We wrap a fitted model so fit() is a no-op.
 	"""
 
@@ -396,25 +422,23 @@ def train_with_cross_val(base_name, model_kind, prep_cfg, n_splits=5, models_dir
 	"""
 	# Load the whole file as one block
 	X_all, y_all, groups_all = load_whole_dataset(base_name, prep_cfg)
-
 	kf = KFold(n_splits=n_splits, shuffle=True, random_state=123)
-	print(f'\n--- CV on {base_name} ({n_splits} Folds) ---')
 
-	for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
-		X_t, X_v = X_all[train_idx], X_all[val_idx]
-		y_t, y_v = y_all[train_idx], y_all[val_idx]
-		g_t = groups_all[train_idx]
+	fold_args = []
+	for i, (t_idx, v_idx) in enumerate(kf.split(X_all)):
+		fold_args.append((i, t_idx, v_idx, X_all, y_all, groups_all, model_kind))
 
-		fold_model = BayesianLinearDosageRegressor() if model_kind == 'linear' else BayesianCategoricalDosageClassifier()
+	print(f'\n--- Parallel CV on {base_name} ({n_splits} Folds) ---')
 
-		fold_model.fit(X_t, y_t, groups=g_t)
+	# Use built-in multiprocessing Pool
+	with concurrent.futures.ProcessPoolExecutor(max_workers=2) as executor:
+		results = list(executor.map(_run_fold_parallel, fold_args))
 
-		y_pred = fold_model.predict(X_v)
-		mse = np.mean((y_v - y_pred) ** 2)
-		print(f'Fold {fold + 1} MSE: {mse:.4f}')
+	for fold_idx, mse in sorted(results):
+		print(f'Fold {fold_idx + 1} MSE: {mse:.4f}')
 
 	# Return model fit on the whole file
-	final_model = BayesianLinearDosageRegressor() if model_kind == 'linear' else BayesianCategoricalDosageClassifier()
+	final_model = BayesianLinearDosageRegressor(cores=1) if model_kind == 'linear' else BayesianCategoricalDosageClassifier(cores=1)
 	final_model.fit(X_all, y_all, groups=groups_all)
 	return final_model
 
@@ -451,9 +475,9 @@ def run_custom_pipeline(train_file, val_file, test_file, model_kind='linear'):
 	# 1. TRAINING: Use all data in the training file
 	X_train, y_train, g_train = load_whole_dataset(train_file, prep_cfg)
 	if model_kind == 'linear':
-		model = BayesianLinearDosageRegressor()
+		model = BayesianLinearDosageRegressor(cores=1)
 	else:
-		model = BayesianCategoricalDosageClassifier()
+		model = BayesianCategoricalDosageClassifier(cores=1)
 
 	print(f'Phase 1: Training on {train_file}')
 	model.fit(X_train, y_train, groups=g_train)
@@ -484,7 +508,7 @@ def train_eval_one(
 	force_retrain: bool = False,
 	draws: int = 1000,
 	tune: int = 1000,
-	chains: int = 2,
+	chains: int = 4,
 	target_accept: float = 0.9,
 	seed: int = 123,
 ) -> Dict[str, Any]:
@@ -494,10 +518,10 @@ def train_eval_one(
 	# 1. Setup Model Types
 	if model_kind == 'linear':
 		ModelCls = BayesianLinearDosageRegressor
-		model_tag = 'bayes_linear'
+		model_tag = 'Bayes Linear'
 	elif model_kind == 'softmax3':
 		ModelCls = BayesianCategoricalDosageClassifier
-		model_tag = 'bayes_softmax3'
+		model_tag = 'Bayes Softmax 3'
 	else:
 		raise ValueError("model_kind must be 'linear' or 'softmax3'")
 
@@ -531,9 +555,10 @@ def train_eval_one(
 	print(f'--- Phase 3: Final Testing on {test_base} ---')
 	X_test, y_test, groups_test = load_whole_dataset(test_base, prep_cfg)
 
-	test_metrics = model_graph_functions.evaluate_and_graph_reg(
-		model, X_test, y_test, groups=groups_test, name=f'{model_tag}_Unseen_Test', graph=True
-	)
+	if model_kind == 'linear':
+		test_metrics = model_graph_functions.evaluate_and_graph_reg(model, X_test, y_test, groups=groups_test, name=f'{model_tag}', graph=True)
+	else:
+		test_metrics = model_graph_functions.evaluate_and_graph_clf(model, X_test, y_test, groups=groups_test, name=f'{model_tag}', graph=True)
 
 	if paths['graph_test']:
 		plt.savefig(paths['graph_test'])
@@ -553,7 +578,7 @@ def train_eval_one(
 	return {'model_kind': model_kind, 'trained': trained, 'test_metrics': test_metrics, 'paths': {k: str(v) for k, v in paths.items() if k != 'dir'}}
 
 
-def train_eval_both(
+def train_eval(
 	train_base: str,
 	val_base: str,
 	test_base: str,
@@ -563,7 +588,7 @@ def train_eval_both(
 	force_retrain: bool = False,
 	draws: int = 1000,
 	tune: int = 1000,
-	chains: int = 2,
+	chains: int = 4,
 	target_accept: float = 0.9,
 	seed: int = 123,
 ) -> Dict[str, Any]:
@@ -619,12 +644,33 @@ def test_on_new_data(model, dataset_name: str, prep_cfg: Optional[data_preparati
 
 	# 3. Use the existing evaluation utility to get metrics and plots
 	# This uses model.predict() internally, which applies stored feature_mean_ and feature_std_
-	metrics = model_graph_functions.evaluate_and_graph_reg(proxy, X_raw, y_raw, name=f'External_Test_{dataset_name}', graph=True)
-
+	if hasattr(model, 'predict_class'):
+		metrics = model_graph_functions.evaluate_and_graph_clf(proxy, X_raw, y_raw, name=f'External_Test_{dataset_name}', graph=True)
+	else:
+		metrics = model_graph_functions.evaluate_and_graph_reg(proxy, X_raw, y_raw, name=f'External_Test_{dataset_name}', graph=True)
 	return metrics
 
 
 if __name__ == '__main__':
 	multiprocessing.set_start_method('forkserver', force=True)
 	training_file, validation_file, testing_file = 'testing.training', 'testing.validation', 'testing.testing'
-	results = train_eval_both(train_base=training_file, val_base=validation_file, test_base=testing_file, force_retrain=True)
+	prep_cfg = data_preparation.PrepConfig(dataset_name='testing')
+	models_dir = 'models'
+	# results = train_eval(train_base=training_file, val_base=validation_file, test_base=testing_file, force_retrain=True)
+	out_softmax = train_eval_one(
+		train_base=training_file,
+		val_base=validation_file,
+		test_base=testing_file,
+		model_kind='softmax3',
+		prep_cfg=prep_cfg,
+		models_dir=models_dir,
+		force_retrain=True,
+		draws=1000,
+		tune=1000,
+		chains=4,
+		target_accept=0.9,
+		seed=123,
+	)
+
+	print('\n--- Pipeline Complete ---')
+	print(f'Results stored in: {out_softmax["paths"]["dir"] if "dir" in out_softmax["paths"] else "models"}')

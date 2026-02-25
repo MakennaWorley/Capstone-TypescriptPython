@@ -151,7 +151,7 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 				return;
 			}
 
-			// Assume JSON envelope (recommended for sending multiple files in one response)
+			// JSON envelope
 			if (contentType.includes('application/json')) {
 				const j = (await resp.json()) as ApiEnvelope;
 
@@ -173,8 +173,6 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 				return;
 			}
 
-			// If your endpoint returns something else (like multipart), you’ll want to change the API.
-			// For now, we show the response as text.
 			const txt = await resp.text();
 			setStatus(`Loaded non-JSON response (${contentType || 'unknown'}). Showing first bytes.`);
 			setData({
@@ -201,7 +199,7 @@ export default function DatasetDashboard({ apiBase, xApiKey, datasets, maxPrevie
 			if (!resp.ok) throw new Error(`Tree fetch failed: ${resp.status}`);
 
 			const j = await resp.json();
-			setFamilyTreeData(j.data); // Based on your api_success helper structure
+			setFamilyTreeData(j.data);
 			setStatus('Tree loaded.');
 		} catch (e: any) {
 			setStatus(e.message);

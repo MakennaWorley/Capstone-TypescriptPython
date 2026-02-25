@@ -33,7 +33,6 @@ export default function FamilyTreeVisualization({ data }: Props) {
 	const HEIGHT = 500;
 	const PADDING = 50;
 
-	// Simple layout logic:
 	// X = Spread based on ID order or index
 	// Y = Based on 'time' (generation)
 	const layout = useMemo(() => {
