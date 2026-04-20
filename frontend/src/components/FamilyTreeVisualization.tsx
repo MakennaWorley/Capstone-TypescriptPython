@@ -1,4 +1,3 @@
-import { FormControlLabel, Switch } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { useMemo, useState } from 'react';
 
@@ -131,10 +130,6 @@ export default function FamilyTreeVisualization({ data, nerdMode, onNerdModeChan
 				<h3 className="family-tree-title">
 					Family Tree: {data.dataset} focusing on individual {data.focus_id}
 				</h3>
-				<FormControlLabel
-					control={<Switch checked={nerdMode} onChange={(e) => onNerdModeChange(e.target.checked)} />}
-					label="Stats for Nerds"
-				/>
 			</div>
 
 			<p className="context-text">

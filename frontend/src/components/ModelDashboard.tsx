@@ -218,10 +218,6 @@ export default function ModelDashboard({ model, nerdMode, onNerdModeChange }: Mo
 
 	return (
 		<div className="dashboard-wrapper">
-			<div className="dashboard-header">
-				<h2 className="heading-flush">Model Dashboard</h2>
-			</div>
-
 			{/* Identity */}
 			<div className="grid-2col-mb">
 				<div className="info-card">
