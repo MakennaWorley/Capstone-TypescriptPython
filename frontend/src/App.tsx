@@ -102,6 +102,7 @@ export default function App() {
 
 	function handleDatasetSelect(dataset: string) {
 		setSelectedDataset(dataset);
+		setTestResults(null);
 		if (dataset) {
 			setSnackbarMessage('Dataset selected — scroll down to see the Dataset Dashboard!');
 			setSnackbarOpen(true);
@@ -110,6 +111,7 @@ export default function App() {
 
 	function handleModelSelect(model: Model | null) {
 		setSelectedModel(model);
+		setTestResults(null);
 		if (model) {
 			const msg = selectedDataset
 				? 'Model selected — scroll down to see the Model Dashboard and test your model!'
